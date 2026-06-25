@@ -1,0 +1,7 @@
+Die RAG pipline nutzt langchain als framework so wie QdrantClient als vektordatenbank
+da hauptsächlich englische und deutsche texte verarbeitet werden wird jina v5 als embeddingmodelle genutz 
+die wahl viel auf dieses modell da sich in test gezeigt hatte das lokale embedding modelle 
+stand 11.10.25 immernoch schwierigkeiten mit den feinheiten deutscher sprache haben. 
+Insbesondere die älteren auf ollama verfügbaren modelle sind für unternehmensinterne daten nicht
+geignet da sie die zusammmenhänge nicht genau effassen Technische dokumenten die eigentlcih 
+zusammmenhänge wärend nicht als zusammmenhängend erkannt. 
