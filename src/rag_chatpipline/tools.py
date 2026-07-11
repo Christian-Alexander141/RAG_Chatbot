@@ -3,7 +3,7 @@ from langchain_core.tools import tool
 import logging
 import os
 from datetime import datetime
-from rag_chatpipline.ragpipline import call_rag_pipeline
+from rag_chatpipline.ragpipline import call_rag_pipeline as run_rag_pipeline
 
 # === Model einrichten ===
 LLM = "qwen3.5:2b"  # qwen3.5:2b hat ein Thinking-Problem -> sehr lange Antwortzeiten
@@ -52,18 +52,10 @@ def bildgenerieren(scene_description: str) -> str:
     return f"Bild gespeichert unter: {image_path}"
 
 @tool
-def call_rag_pipeline(query: str) -> str:
-    """Ruft die RAG-Pipeline auf, um eine Antwort auf eine komplexe Frage zu generieren.
-    Nutze dieses Tool, wenn der Nutzer eine Frage stellt, die Recherche oder Kontextverständnis erfordert.
-
-    Args:
-        query: Die Frage oder Anfrage des Nutzers.
-    """
+def call_rag_pipeline(query: str, chat_id: str | None = None, memory_dir: str | None = None) -> str:
+    """Ruft die erweiterte RAG-Pipeline auf und nutzt dabei das Chat-Gedächtnis."""
     logging.info(f"call_rag_pipeline Tool aufgerufen mit Query: {query}")
-    
-    
-    
-    return f"RAG-Pipeline würde hier mit Query: '{query}' aufgerufen werden."
+    return run_rag_pipeline(query=query, chat_id=chat_id, memory_dir=memory_dir)
 
 
 # === Hilfsfunktionen ===
