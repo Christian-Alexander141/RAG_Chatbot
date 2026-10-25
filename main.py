@@ -10,7 +10,7 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from rag_chatpipline.api_server import app as rag_app
-from rag_chatpipline.ragpipline import call_rag_pipeline, create_chat_session
+from Agents.chat_agent import chat
 
 
 def run_backend(host: str = "0.0.0.0", port: int = 8000) -> None:
@@ -23,6 +23,7 @@ def run_backend(host: str = "0.0.0.0", port: int = 8000) -> None:
             "source myenv/bin/activate && pip install uvicorn"
         ) from exc
 
+    print(f"Backend und Web-Oberfläche: http://localhost:{port}")
     uvicorn.run("main:rag_app", host=host, port=port, reload=False)
 
 
@@ -37,8 +38,11 @@ def run_frontend() -> None:
             "npm konnte nicht gefunden werden. Bitte installiere Node.js/npm oder verwende einen Node-Paketmanager."
         )
 
-    if not frontend_dir.exists():
-        raise SystemExit(f"Frontend-Verzeichnis nicht gefunden: {frontend_dir}")
+    if not (frontend_dir / "package.json").exists():
+        raise SystemExit(
+            f"Kein Frontend in {frontend_dir} (Submodul nicht ausgecheckt?). "
+            "Die integrierte Web-Oberfläche startet mit: python main.py --mode backend"
+        )
 
     process = subprocess.Popen(
         [npm_cmd, "run", "dev"],
@@ -72,8 +76,11 @@ def run_all(host: str = "0.0.0.0", port: int = 8000) -> None:
             "npm konnte nicht gefunden werden. Bitte installiere Node.js/npm oder verwende einen Node-Paketmanager."
         )
 
-    if not frontend_dir.exists():
-        raise SystemExit(f"Frontend-Verzeichnis nicht gefunden: {frontend_dir}")
+    if not (frontend_dir / "package.json").exists():
+        raise SystemExit(
+            f"Kein Frontend in {frontend_dir} (Submodul nicht ausgecheckt?). "
+            "Die integrierte Web-Oberfläche startet mit: python main.py --mode backend"
+        )
 
     frontend_proc = subprocess.Popen(
         [npm_cmd, "run", "dev"],
@@ -105,7 +112,7 @@ def run_all(host: str = "0.0.0.0", port: int = 8000) -> None:
 
 def run_cli() -> None:
     parser = argparse.ArgumentParser(description="Zentraler Einstiegspunkt für die RAG-Chatbot-App")
-    parser.add_argument("--mode", choices=["backend", "frontend", "all", "chat"], default="all")
+    parser.add_argument("--mode", choices=["backend", "frontend", "all", "chat"], default="backend")
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--message", default="Hallo")
@@ -125,10 +132,9 @@ def run_cli() -> None:
         run_all(host=args.host, port=args.port)
         return
 
-    session = create_chat_session(chat_id=args.chat_id)
-    answer = call_rag_pipeline(query=args.message, chat_id=session["chat_id"])
-    print(f"Chat-ID: {session['chat_id']}")
-    print(answer)
+    result = chat(args.message, args.chat_id)
+    print(f"Chat-ID: {result['chat_id']}")
+    print(result["text"])
 
 
 if __name__ == "__main__":

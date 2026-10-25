@@ -1,0 +1,7 @@
+# Optional: lokale Bildgenerierung mit FLUX (braucht eine GPU mit ausreichend VRAM/RAM)
+torch
+diffusers
+transformers
+accelerate
+sentencepiece
+protobuf

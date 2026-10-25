@@ -1,2 +1,16 @@
-langchain-huggingface
+langchain>=1.0
+langchain-ollama
+langchain-qdrant
+langchain-text-splitters
+langgraph
+qdrant-client
+fastapi
 uvicorn
+python-multipart
+pypdf
+python-docx
+pytest
+httpx
+chainlit
+sqlalchemy[asyncio]
+aiosqlite

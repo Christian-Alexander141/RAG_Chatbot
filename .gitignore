@@ -41,3 +41,11 @@ Thumbs.db
 
 # Misc
 doks.txt
+
+# Agent-Workspace (Uploads, erzeugte Bilder, Agent-Dateien)
+workspace/
+.venv/
+# Chainlit Laufzeitdaten
+src/ui/.files/
+src/ui/chainlit.md
+src/ui/.chainlit/translations/
