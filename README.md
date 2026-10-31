@@ -2,6 +2,8 @@
 
 Prototyp eines firmeninternen Chatbots, der lokal laufende Sprachmodelle über **Ollama** nutzbar macht. Alles läuft auf dem eigenen Rechner, keine Daten verlassen das Haus.
 
+![Chat-Oberfläche: Auf "Erstelle ein Bild von einem Zahnrad in einem CAD-Programm" antwortet der Chatbot mit einem lokal mit FLUX erzeugten Bild](docs/images/ui-chat.png)
+
 - **Wissensbasis aus eigenen Dokumenten** (PDF, DOCX, TXT, MD, CSV, JSON, …), indexiert in Qdrant mit Ollama-Embeddings
 - **Werkzeug-Agent** auf Basis von LangChain (`create_agent`): durchsucht Dokumente und arbeitet mit Dateien, begrenzt auf den Ordner `workspace/` (Lesen, Schreiben ohne stilles Überschreiben, Auflisten, Suchen; kein Löschen)
 - **Bild-Agent** mit FLUX.2 [klein] 4B: „Erstelle ein Bild von …“ erzeugt lokal ein Bild und zeigt es im Chat
@@ -13,7 +15,7 @@ Prototyp eines firmeninternen Chatbots, der lokal laufende Sprachmodelle über *
 
 - **Python 3.10 oder neuer.** Unter Debian/Ubuntu (auch WSL) zusätzlich `sudo apt install python3-venv`.
 - **[Ollama](https://ollama.com)** mit mindestens einem Sprachmodell, das Tool-Calling kann, und einem Embedding-Modell.
-- **Für Bilder:** eine NVIDIA-GPU mit 8 GB Grafikspeicher oder mehr (empfohlen), etwa 20 GB freier Speicherplatz (16 GB Modell, dazu PyTorch). Ohne GPU läuft FLUX auf der CPU, aber sehr langsam.
+- **Für Bilder:** etwa 23 GB freier Arbeitsspeicher beim Laden des Modells (32 GB RAM im Rechner empfohlen), eine NVIDIA-GPU mit 8 GB Grafikspeicher oder mehr (empfohlen) und etwa 20 GB freier Speicherplatz (16 GB Modell, dazu PyTorch). Ohne GPU läuft FLUX auf der CPU, aber sehr langsam.
 
 ## Installation
 
@@ -95,6 +97,8 @@ Erkannt wird ein Bildwunsch an einem Verb (erstelle, generiere, erzeuge, zeichne
 
 ## Einstellungen
 
+![Dialog "Einstellungen" mit Auswahl für Chat-Modell, Werkzeug-Agent, Bild-Agent und Bildmodell](docs/images/ui-einstellungen.png)
+
 | Einstellung | Wofür | Zur Auswahl |
 |---|---|---|
 | Chat-Modell | formuliert die Antworten | lokale Ollama-Sprachmodelle |
@@ -122,7 +126,9 @@ Standardmodell ist **[FLUX.2 [klein] 4B](https://huggingface.co/black-forest-lab
   | keine NVIDIA-GPU | CPU-Paket (spart mehrere GB) |
   | macOS | Standardpaket von PyPI |
 
-- **Grafikspeicher:** FLUX läuft auf GPUs ohne bfloat16 (z. B. GTX 10xx) in float16, sonst in bfloat16. Es holt immer nur den gerade nötigen Modellteil in den Grafikspeicher, damit auch Karten mit 8 bis 12 GB reichen.
+- **Grafikspeicher:** FLUX läuft auf GPUs ohne bfloat16 (z. B. GTX 10xx) in float16, sonst in bfloat16. Es holt immer nur den gerade nötigen Modellteil in den Grafikspeicher, damit auch Karten mit 8 bis 12 GB reichen. Auf einer GTX 1080 Ti (11 GB) braucht ein Bild mit 768 × 768 Pixeln höchstens 8,4 GB Grafikspeicher und gut eine Minute.
+- **Arbeitsspeicher:** Dafür liegt das ganze Modell im Arbeitsspeicher: beim Laden kurz bis zu 23 GB, danach rund 18 GB. Vor dem Laden prüft die App, ob genug frei ist, und meldet sonst im Chat, statt den Rechner in Speichermangel zu treiben. 60 Sekunden nach dem letzten Bild gibt sie das Modell wieder frei (`IMAGE_KEEP_ALIVE`). Das nächste Bild lädt es neu, das kostet etwa 10 Sekunden.
+- **Nur eine Instanz:** Zwei gleichzeitig laufende Chatbot-Server mit geladenem FLUX passen nicht in 32 bis 40 GB RAM.
 - **Ollama und FLUX:** Vor jedem Bild entlädt die App die Ollama-Modelle aus dem Grafikspeicher. Ollama lädt sie bei der nächsten Frage von selbst wieder, die erste Antwort nach einem Bild dauert deshalb etwas länger. Es wird immer nur ein Bild gleichzeitig erzeugt.
 - **Weitere Bildmodelle:** Jedes diffusers-Modell lässt sich als Ordner unter `models/` ablegen. Mit einer leeren Datei `.download-complete` darin erscheint es in den Einstellungen.
 - **Ohne passende Hardware:** `IMAGE_BACKEND=mock` setzen (graues Platzhalterbild) oder mit `--no-image` installieren.
@@ -144,6 +150,7 @@ Erzeugte Bilder liegen in `workspace/AIbilder/` und sind über `/images/{name}` 
 | `FLUX_MODEL` | `black-forest-labs/FLUX.2-klein-4B` | Bildmodell, das der Installer von Hugging Face lädt |
 | `MODELS_DIR` | `./models` | Ablage der Bildmodelle |
 | `IMAGE_SIZE` | `768` | Kantenlänge der Bilder in Pixeln |
+| `IMAGE_KEEP_ALIVE` | `60` | Sekunden, die das Bildmodell nach dem letzten Bild im Arbeitsspeicher bleibt (`0` = sofort freigeben) |
 | `CORS_ORIGINS` | `http://localhost:3000` | Erlaubte Frontend-Origins, kommagetrennt |
 
 Die Modelle sind Standardwerte. Jeder Nutzer kann sie in den Einstellungen für sich ändern (außer dem Embedding-Modell).
@@ -199,6 +206,7 @@ Alles, was zur Laufzeit entsteht, steht in `.gitignore` und landet nicht im Repo
   - `.chainlit/config.toml`
   - `public/user_menu_settings.js` (Menüpunkt *Einstellungen*), `public/elements/` (`SpeakButton.jsx`, `DocumentsPanel.jsx`)
 - `tests/`
+- `docs/images/`: Screenshots für diese README
 
 ## Fehlerbehebung
 
@@ -209,6 +217,8 @@ Alles, was zur Laufzeit entsteht, steht in `.gitignore` und landet nicht im Repo
 | „… wurde unter Windows angelegt und passt nicht zu diesem System“ | `.venv` stammt aus Windows (oder umgekehrt). Ordner löschen oder `--force`. |
 | `CUDA error: no kernel image is available` | PyTorch passt nicht zur GPU. `./install.sh --force` wählt die Variante neu. |
 | „Bildmodell … fehlt“ im Chat | Download nicht abgeschlossen. `./install.sh` erneut ausführen, er setzt fort. |
+| Server stürzt bei der Bilderzeugung ab, VS Code schließt sich mit | Der Arbeitsspeicher ist voll gelaufen. Linux beendet dann große Prozesse, und weil der Server im Prozessbereich von VS Code läuft, stoppt systemd VS Code gleich mit. Prüfen mit `journalctl -k \| grep -i "out of memory"`. Meist läuft der Chatbot zweimal (z. B. ein vergessener Server in einem anderen Terminal). Die App prüft den freien Speicher inzwischen vor dem Laden. |
+| „Zu wenig freier Arbeitsspeicher für FLUX…“ im Chat | Andere Programme oder eine zweite Instanz des Chatbots schließen, dann erneut versuchen. |
 | Bildgenerierung bricht mit zu wenig Grafikspeicher ab | `IMAGE_SIZE` verkleinern (z. B. `512`) oder andere GPU-Programme schließen. |
 | Menüpunkt *Einstellungen* fehlt | Erscheint erst in einem geöffneten Chat. Alternativ das Zahnrad neben dem Eingabefeld nutzen. |
 | In den Einstellungen fehlen Modelle | Ollama läuft nicht oder das Modell ist ein Cloud- bzw. Embedding-Modell. Für den Werkzeug-Agenten erscheinen nur Modelle mit Tool-Calling. |
@@ -219,8 +229,8 @@ Alles, was zur Laufzeit entsteht, steht in `.gitignore` und landet nicht im Repo
 
 - **Installation:** `requirements.txt` und `requirements-image.txt` sind durch `pyproject.toml` ersetzt. Neuer Installer (`install.py` mit den Startern `install.sh` und `install.bat`) für Linux, WSL, macOS und Windows. Er richtet `.venv` ein, wählt PyTorch passend zur GPU und lädt FLUX einmalig. `.gitattributes` sorgt für die richtigen Zeilenenden der Starter.
 - **Start:** `main.py` nutzt automatisch das Python aus `.venv` und meldet fehlende Pakete verständlich.
-- **Bildgenerierung:** FLUX.2 [klein] 4B ersetzt FLUX.1-schnell. Bildwünsche gehen direkt an den neuen Bild-Agenten statt an den Werkzeug-Agenten. Vor jedem Bild wird der Grafikspeicher von Ollama freigegeben.
-- **Einstellungen:** Neuer Menüpunkt im Benutzermenü. Chat-Modell, Werkzeug-Agent, Bild-Agent und Bildmodell sind pro Nutzer wählbar, angeboten werden nur lokale Modelle. Neue Umgebungsvariablen `IMAGE_PROMPT_MODEL` und `MODELS_DIR`.
+- **Bildgenerierung:** FLUX.2 [klein] 4B ersetzt FLUX.1-schnell. Bildwünsche gehen direkt an den neuen Bild-Agenten statt an den Werkzeug-Agenten. Vor jedem Bild wird der Grafikspeicher von Ollama freigegeben. Die App prüft vor dem Laden den freien Arbeitsspeicher und gibt das Modell nach 60 Sekunden ohne Bild wieder frei (behebt Abstürze durch Speichermangel, bei denen auch VS Code beendet wurde).
+- **Einstellungen:** Neuer Menüpunkt im Benutzermenü. Chat-Modell, Werkzeug-Agent, Bild-Agent und Bildmodell sind pro Nutzer wählbar, angeboten werden nur lokale Modelle. Neue Umgebungsvariablen `IMAGE_PROMPT_MODEL`, `MODELS_DIR` und `IMAGE_KEEP_ALIVE`.
 - **Aufgeräumt:** Der Test der alten `soul.md`-Pipeline (`test_rag_pipeline_memory.py`) und eingecheckte Testreste (`tmp_memory_*`) sind entfernt. `.gitignore` deckt jetzt auch `models/` ab. Neue Tests für Bild-Agent, Modellwahl und Einstellungen.
 
 ## Verwendete Open-Source-Projekte

@@ -5,10 +5,13 @@ Bildmodelle liegen als Ordner unter models/. Das Standardmodell lädt der Instal
 """
 from __future__ import annotations
 
+import ctypes
 import gc
 import logging
 import struct
+import sys
 import threading
+import time
 import zlib
 from datetime import datetime
 from pathlib import Path
@@ -20,12 +23,16 @@ logger = logging.getLogger(__name__)
 
 _pipeline = None
 _pipeline_dir: Optional[Path] = None
+_last_used = 0.0
+_release_timer: Optional[threading.Timer] = None
 _lock = threading.Lock()
 
 # Gleiche Gewichte liegen im Repo zusätzlich als eine große Einzeldatei; diffusers braucht nur die Unterordner.
 _SKIP_FILES = ["*.jpg", "flux-2-klein-4b.safetensors"]
 _DONE_MARKER = ".download-complete"
 _DOWNLOAD_GB = 16
+# Beim Laden belegt die Pipeline mehr als die Gewichte auf der Platte (gemessen: 16 GB Dateien, Spitze 22,7 GB RAM).
+_RAM_FACTOR = 1.5
 
 
 class ImageBackendError(RuntimeError):
@@ -81,6 +88,53 @@ def _free_vram_from_ollama() -> None:
         logger.debug("Ollama-Modelle konnten nicht entladen werden", exc_info=True)
 
 
+def _free_memory() -> None:
+    import torch
+
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    if sys.platform.startswith("linux"):
+        ctypes.CDLL("libc.so.6").malloc_trim(0)  # gibt freigewordenen Speicher wirklich ans System zurück
+
+
+def _check_free_ram(model_dir: Path) -> None:
+    """Bricht mit einer Meldung ab, statt den Rechner in Speichermangel zu treiben. Dann beendet Linux
+    große Prozesse, und zwar nicht nur den Server, sondern z. B. auch die IDE, aus der er gestartet wurde."""
+    try:
+        import psutil
+    except ImportError:
+        return
+    need = sum(f.stat().st_size for f in model_dir.glob("*/*.safetensors")) * _RAM_FACTOR
+    available = psutil.virtual_memory().available
+    if available < need:
+        raise ImageBackendError(
+            f"Zu wenig freier Arbeitsspeicher für {model_dir.name}: {available / 1e9:.0f} GB frei, gebraucht "
+            f"werden etwa {need / 1e9:.0f} GB. Bitte andere Programme oder eine zweite Instanz des Chatbots schließen."
+        )
+
+
+def _release_if_idle() -> None:
+    """Gibt das Bildmodell frei, wenn es IMAGE_KEEP_ALIVE Sekunden nicht genutzt wurde."""
+    global _pipeline, _pipeline_dir
+    with _lock:
+        if _pipeline is None or time.monotonic() - _last_used < config.IMAGE_KEEP_ALIVE - 1:
+            return
+        name = _pipeline_dir.name
+        _pipeline = _pipeline_dir = None
+        _free_memory()
+    logger.info("Bildmodell %s freigegeben", name)
+
+
+def _schedule_release() -> None:
+    global _release_timer
+    if _release_timer is not None:
+        _release_timer.cancel()
+    _release_timer = threading.Timer(max(config.IMAGE_KEEP_ALIVE, 0), _release_if_idle)
+    _release_timer.daemon = True
+    _release_timer.start()
+
+
 def _load_pipeline(model_dir: Path):
     global _pipeline, _pipeline_dir
     if _pipeline is not None and _pipeline_dir == model_dir:
@@ -93,13 +147,17 @@ def _load_pipeline(model_dir: Path):
 
     if _pipeline is not None:  # anderes Modell gewählt: altes freigeben, zwei passen nicht in den Speicher
         _pipeline = _pipeline_dir = None
-        gc.collect()
-        torch.cuda.empty_cache()
+        _free_memory()
+    _check_free_ram(model_dir)
 
     gpu = torch.cuda.is_available()
     # Ältere GPUs (z. B. GTX 10xx) können kein bfloat16.
     dtype = torch.float16 if gpu and not torch.cuda.is_bf16_supported(including_emulation=False) else torch.bfloat16
-    pipe = DiffusionPipeline.from_pretrained(model_dir, torch_dtype=dtype)
+    # Im gespeicherten Format (bfloat16) laden und erst danach umwandeln: Beim Umwandeln während des Ladens
+    # lägen kurz beide Fassungen im Arbeitsspeicher (gemessen gut 5 GB mehr).
+    pipe = DiffusionPipeline.from_pretrained(model_dir, torch_dtype=torch.bfloat16)
+    if dtype != torch.bfloat16:
+        pipe.to(dtype=dtype)
     if gpu:
         # Holt immer nur den gerade nötigen Modellteil in den Grafikspeicher, damit auch 8-12 GB reichen.
         pipe.enable_model_cpu_offload()
@@ -134,16 +192,22 @@ def generate_image(prompt: str, model: Optional[str] = None) -> Path:
     if config.IMAGE_BACKEND != "flux":
         raise ImageBackendError(f"Unbekanntes IMAGE_BACKEND '{config.IMAGE_BACKEND}' (erlaubt: flux, mock).")
 
+    global _last_used
     model_dir = _model_dir(model)
-    with _lock:  # eine Generierung gleichzeitig, sonst geht der Speicher aus
-        _free_vram_from_ollama()
-        pipe = _load_pipeline(model_dir)
-        image = pipe(
-            prompt=prompt,
-            height=config.IMAGE_SIZE,
-            width=config.IMAGE_SIZE,
-            num_inference_steps=4,  # FLUX.2 [klein] und FLUX.1-schnell sind auf 4 Schritte ausgelegt
-            guidance_scale=1.0,
-        ).images[0]
+    try:
+        with _lock:  # eine Generierung gleichzeitig, sonst geht der Speicher aus
+            _free_vram_from_ollama()
+            pipe = _load_pipeline(model_dir)
+            image = pipe(
+                prompt=prompt,
+                height=config.IMAGE_SIZE,
+                width=config.IMAGE_SIZE,
+                num_inference_steps=4,  # FLUX.2 [klein] und FLUX.1-schnell sind auf 4 Schritte ausgelegt
+                guidance_scale=1.0,
+            ).images[0]
+    finally:
+        # Das Modell belegt rund 16 GB Arbeitsspeicher. Nach einer Pause wird es freigegeben.
+        _last_used = time.monotonic()
+        _schedule_release()
     image.save(target)
     return target

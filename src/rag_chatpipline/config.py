@@ -32,6 +32,8 @@ FLUX_MODEL = os.getenv("FLUX_MODEL", "black-forest-labs/FLUX.2-klein-4B")
 MODELS_DIR = Path(os.getenv("MODELS_DIR", ROOT / "models")).resolve()
 FLUX_MODEL_DIR = MODELS_DIR / FLUX_MODEL.split("/")[-1]
 IMAGE_SIZE = int(os.getenv("IMAGE_SIZE", "768"))
+# Sekunden, die das Bildmodell nach dem letzten Bild im Arbeitsspeicher bleibt (0 = sofort freigeben).
+IMAGE_KEEP_ALIVE = int(os.getenv("IMAGE_KEEP_ALIVE", "60"))
 
 CORS_ORIGINS = [o for o in os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",") if o]
 

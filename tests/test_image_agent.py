@@ -81,3 +81,31 @@ def test_available_image_models_only_lists_complete_downloads(monkeypatch, tmp_p
     (tmp_path / "fertig" / ".download-complete").touch()
     (tmp_path / "halb").mkdir()
     assert image_backend.available_image_models() == ["fertig"]
+
+
+def test_too_little_ram_is_reported_instead_of_crashing(monkeypatch, tmp_path):
+    import types
+
+    model = tmp_path / "Modell"
+    (model / "transformer").mkdir(parents=True)
+    (model / "transformer" / "weights.safetensors").write_bytes(b"x" * 1000)
+    fake_psutil = types.SimpleNamespace(virtual_memory=lambda: types.SimpleNamespace(available=1000))
+    monkeypatch.setitem(__import__("sys").modules, "psutil", fake_psutil)
+
+    with pytest.raises(image_backend.ImageBackendError, match="Zu wenig freier Arbeitsspeicher"):
+        image_backend._check_free_ram(model)
+
+
+def test_idle_image_model_is_released(monkeypatch, tmp_path):
+    monkeypatch.setattr(image_backend, "_free_memory", lambda: None)
+    monkeypatch.setattr(config, "IMAGE_KEEP_ALIVE", 60)
+    monkeypatch.setattr(image_backend, "_pipeline", object())
+    monkeypatch.setattr(image_backend, "_pipeline_dir", tmp_path)
+
+    monkeypatch.setattr(image_backend, "_last_used", image_backend.time.monotonic())
+    image_backend._release_if_idle()  # gerade erst benutzt: bleibt geladen
+    assert image_backend._pipeline is not None
+
+    monkeypatch.setattr(image_backend, "_last_used", image_backend.time.monotonic() - 61)
+    image_backend._release_if_idle()
+    assert image_backend._pipeline is None
