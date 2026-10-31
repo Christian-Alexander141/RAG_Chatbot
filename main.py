@@ -19,8 +19,8 @@ def run_backend(host: str = "0.0.0.0", port: int = 8000) -> None:
     except ModuleNotFoundError as exc:
         raise SystemExit(
             "uvicorn ist nicht in der aktiven Python-Umgebung installiert. "
-            "Bitte aktivieren Sie die Projekt-Umgebung und installieren Sie das Paket dort, z. B.: "
-            "source myenv/bin/activate && pip install uvicorn"
+            "Bitte die Projekt-Umgebung einrichten und aktivieren: "
+            "./install.sh && source .venv/bin/activate"
         ) from exc
 
     print(f"Backend und Web-Oberfläche: http://localhost:{port}")

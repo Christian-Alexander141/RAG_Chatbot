@@ -1,0 +1,4 @@
+# Shell-Skripte brauchen LF, sonst scheitern sie unter WSL/Linux ("bad interpreter").
+*.sh text eol=lf
+# Batch-Dateien laufen unter Windows nur mit CRLF zuverlässig.
+*.bat text eol=crlf

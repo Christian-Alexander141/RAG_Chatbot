@@ -12,8 +12,8 @@ Prototyp eines firmeninternen Chatbots, der lokal laufende Sprachmodelle über *
 ## Start
 
 ```bash
-python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
+./install.sh --dev               # legt .venv an und installiert pyproject.toml (--dev: mit Test-Paketen)
+source .venv/bin/activate
 ollama pull qwen3:1.7b          # Agent-Modell (muss Tool-Calling können)
 ollama pull cas/teuken-7b-q4km    # Chat-Modell (Teuken, formuliert die Antworten)
 ollama pull nomic-embed-text    # Embedding-Modell
@@ -21,6 +21,10 @@ python main.py                  # Chainlit-Oberfläche auf http://localhost:8000
 ```
 
 Die App lädt **keine** Modelle selbst herunter. Fehlt eines, kommt eine Fehlermeldung mit dem passenden `ollama pull`-Befehl.
+
+Unter **Windows** stattdessen `install.bat --dev` (oder Doppelklick) und `.venv\Scripts\activate`. Beide Starter rufen `install.py` auf, das geht auch direkt: `python install.py --dev`.
+
+Der Installer überspringt alles, was schon erledigt ist, und installiert nur neu, wenn sich `pyproject.toml` oder die gewählten Extras geändert haben (`--force` legt `.venv` neu an). Windows und WSL können sich keine `.venv` teilen. Unter WSL das Projekt am besten im Linux-Dateisystem (`~/...`) klonen, nicht unter `/mnt/c`. Manuell geht es auch mit `pip install ".[dev]"`.
 
 Tests: `pytest`
 
@@ -43,7 +47,7 @@ Wechselt man das Embedding-Modell, ändert sich die Vektorgröße. Dann `memory/
 ## Bildgenerierung mit FLUX
 
 ```bash
-pip install -r requirements-image.txt
+./install.sh --dev --image
 ```
 
 FLUX.1-schnell braucht eine GPU oder sehr viel RAM (grob 24 GB und mehr) und lädt beim ersten Einsatz mehrere GB von Hugging Face. Ohne passende Hardware `IMAGE_BACKEND=mock` setzen. Fehlen die Pakete, meldet der Agent die fehlgeschlagene Generierung im Chat.
@@ -68,6 +72,7 @@ FLUX.1-schnell braucht eine GPU oder sehr viel RAM (grob 24 GB und mehr) und lä
 ## Struktur
 
 - `main.py`: Startpunkt (`--mode backend|chat|frontend|all`)
+- `install.py` (+ Starter `install.sh` / `install.bat`): richtet `.venv` ein und installiert `pyproject.toml`
 - `src/Agents/`: `chat_agent.py` (Agent), `tools.py` (Wissensbasis, Dateisystem, Bild), `image_backend.py` (FLUX/Mock)
 - `src/rag_chatpipline/`: `api_server.py`, `knowledge_base.py`, `config.py`
 - `src/ui/`: Chainlit-Oberfläche (`chainlit_app.py`, `history_db.py`, `.chainlit/config.toml`, `public/elements/` mit `SpeakButton.jsx` und `DocumentsPanel.jsx`)

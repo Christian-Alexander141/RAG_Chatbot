@@ -25,7 +25,7 @@ def _load_flux():
             from diffusers import FluxPipeline
         except ImportError as exc:
             raise ImportError(
-                "Für FLUX fehlen Pakete. Installation: pip install -r requirements-image.txt"
+                "Für FLUX fehlen Pakete. Installation: ./install.sh --image"
             ) from exc
 
         pipe = FluxPipeline.from_pretrained(config.FLUX_MODEL, torch_dtype=torch.bfloat16)

@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rag-chatbot"
+version = "0.1.0"
+description = "Firmeninterner RAG-Chatbot mit lokalen Ollama-Modellen, Qdrant-Wissensbasis und Chainlit-Oberfläche"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+dependencies = [
+    "langchain>=1.0",
+    "langchain-ollama",
+    "langchain-qdrant",
+    "langchain-text-splitters",
+    "langgraph",
+    "qdrant-client",
+    "fastapi",
+    "uvicorn",
+    "python-multipart",
+    "pypdf",
+    "python-docx",
+    "chainlit",
+    "sqlalchemy[asyncio]",
+    "aiosqlite",
+]
+
+[project.optional-dependencies]
+# Tests
+dev = [
+    "pytest",
+    "httpx",
+]
+# Optional: lokale Bildgenerierung mit FLUX (braucht eine GPU mit ausreichend VRAM/RAM)
+image = [
+    "torch",
+    "diffusers",
+    "transformers",
+    "accelerate",
+    "sentencepiece",
+    "protobuf",
+]
+
+[tool.setuptools]
+# Der Code läuft direkt aus src/ (main.py und tests/conftest.py setzen den Pfad).
+# Installiert werden nur die Abhängigkeiten, keine Pakete.
+packages = []
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
