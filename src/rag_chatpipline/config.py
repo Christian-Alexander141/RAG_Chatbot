@@ -14,6 +14,8 @@ AGENT_MODEL = os.getenv("AGENT_MODEL", "qwen3:1.7b")
 # Bild-Agent: schreibt aus dem Bildwunsch den englischen FLUX-Prompt.
 IMAGE_PROMPT_MODEL = os.getenv("IMAGE_PROMPT_MODEL", AGENT_MODEL)
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "nomic-embed-text")
+# Suche in der Wissensbasis: "hybrid" (Embeddings + BM25) oder "dense" (nur Embeddings)
+RETRIEVAL_MODE = os.getenv("RETRIEVAL_MODE", "hybrid")
 # "true"/"false" schaltet das Denken (Thinking) des Agent-Modells ein/aus, leer = Modell-Standard.
 AGENT_REASONING = {"true": True, "false": False}.get(os.getenv("AGENT_REASONING", "").lower())
 

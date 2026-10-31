@@ -23,6 +23,7 @@ def workspace(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "WORKSPACE_DIR", root)
     monkeypatch.setattr(config, "DOCUMENTS_DIR", root / "Dateien")
     monkeypatch.setattr(config, "IMAGES_DIR", root / "AIbilder")
+    monkeypatch.setattr(config, "MEMORY_DIR", tmp_path / "memory")
     config.ensure_dirs()
     return root
 

@@ -4,6 +4,7 @@
 - Chat-Modell (CHAT_MODEL, z. B. Teuken): formuliert aus Frage, Dokumenttreffern und Tool-Ergebnissen
   die endgültige Antwort. Sind beide Modelle gleich, entfällt dieser zweite Schritt.
 - Bildwünsche ("Erstelle ein Bild von ...") gehen statt an den Werkzeug-Agenten direkt an den Bild-Agenten.
+- Dokumentanfragen ("Gib mir die Reisekostenrichtlinie") beantwortet die deterministische Dokumentsuche ohne Modell.
 """
 from __future__ import annotations
 
@@ -19,7 +20,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 
 from rag_chatpipline import config, knowledge_base
 
-from . import image_agent
+from . import document_lookup, image_agent
 from .models import ModelChoice
 from .tools import TOOLS, retrieve_context
 
@@ -191,12 +192,35 @@ def _run_image_agent(message: str, chat_id: str, agent: Any, models: ModelChoice
     return [ToolMessage(content, artifact=artifact, name="generate_image", tool_call_id=call_id), AIMessage(draft)]
 
 
+def _find_documents(message: str) -> list[str]:
+    if not document_lookup.is_fetch_request(message):
+        return []
+    try:
+        sources = list(knowledge_base.list_sources())
+    except Exception:
+        logger.warning("Wissensbasis nicht verfügbar", exc_info=True)
+        return []
+    return document_lookup.find_documents(message, sources)
+
+
+def _run_document_lookup(message: str, chat_id: str, agent: Any, names: list[str]):
+    """Liefert die gefundenen Dokumente als Links, ohne Sprachmodell. Gibt den Antworttext zurück."""
+    yield {"event": "lookup_start"}
+    call_id = f"lookup-{uuid.uuid4().hex[:8]}"
+    yield {"event": "tool_start", "id": call_id, "name": "find_document", "args": {"anfrage": message}}
+    text = document_lookup.answer(names)
+    yield {"event": "tool_end", "id": call_id, "name": "find_document", "output": ", ".join(names)}
+    thread = {"configurable": {"thread_id": chat_id}}
+    agent.update_state(thread, {"messages": [HumanMessage(message), AIMessage(text)]}, as_node="model")
+    return text
+
+
 def chat_stream(message: str, chat_id: Optional[str] = None, agent: Any = None,
                 chat_model: Any = None, models: Optional[ModelChoice] = None) -> Iterator[dict[str, Any]]:
     """Wie chat(), liefert aber Ereignisse, sobald sie eintreten (Fortschritt und Antwort-Tokens).
 
-    Ereignisse (Schlüssel "event"): start, retrieval_start, retrieval_end, agent_start oder image_agent_start,
-    tool_start, tool_end, write_start, token, done. "done" enthält unter "result" das Ergebnis wie chat().
+    Ereignisse (Schlüssel "event"): start, retrieval_start, retrieval_end, agent_start, image_agent_start oder
+    lookup_start, tool_start, tool_end, write_start, token, done. "done" enthält unter "result" das Ergebnis wie chat().
     models gibt die Modelle für diesen Zug vor (Einstellungen des Nutzers), sonst gilt die Konfiguration.
     """
     chat_id = chat_id or f"chat-{uuid.uuid4().hex[:12]}"
@@ -208,6 +232,14 @@ def chat_stream(message: str, chat_id: Optional[str] = None, agent: Any = None,
     if image_agent.is_image_request(message):
         documents = ""
         turn = yield from _run_image_agent(message, chat_id, agent, models)
+    elif found := _find_documents(message):
+        text = yield from _run_document_lookup(message, chat_id, agent, found)
+        history = _histories.setdefault(chat_id, [])
+        history += [HumanMessage(message), AIMessage(text)]
+        del history[:-MAX_HISTORY_MESSAGES]
+        yield {"event": "token", "text": text}
+        yield {"event": "done", "result": {"chat_id": chat_id, "text": text, "images": []}}
+        return
     else:
         yield {"event": "retrieval_start"}
         try:

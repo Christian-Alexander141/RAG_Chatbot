@@ -5,6 +5,8 @@ Prototyp eines firmeninternen Chatbots, der lokal laufende Sprachmodelle über *
 ![Chat-Oberfläche: Auf "Erstelle ein Bild von einem Zahnrad in einem CAD-Programm" antwortet der Chatbot mit einem lokal mit FLUX erzeugten Bild](docs/images/ui-chat.png)
 
 - **Wissensbasis aus eigenen Dokumenten** (PDF, DOCX, TXT, MD, CSV, JSON, …), indexiert in Qdrant mit Ollama-Embeddings
+- **Hybride Suche:** Embeddings (Bedeutung) und BM25 (exakte Begriffe wie Abkürzungen, Normen, Artikelnummern)
+- **Dokumentsuche ohne Modell:** „Gib mir die Reisekostenrichtlinie“ liefert direkt das Dokument als Link
 - **Werkzeug-Agent** auf Basis von LangChain (`create_agent`): durchsucht Dokumente und arbeitet mit Dateien, begrenzt auf den Ordner `workspace/` (Lesen, Schreiben ohne stilles Überschreiben, Auflisten, Suchen; kein Löschen)
 - **Bild-Agent** mit FLUX.2 [klein] 4B: „Erstelle ein Bild von …“ erzeugt lokal ein Bild und zeigt es im Chat
 - **Einstellungen pro Nutzer:** Sprach- und Bildmodelle für Chat und Agenten im Benutzermenü wählen
@@ -76,13 +78,37 @@ Weitere Modi: `python main.py --mode chat --message "Hallo"` (eine Frage im Term
 Nachricht
  ├─ Bildwunsch? ("Erstelle ein Bild von …")
  │    └─ Bild-Agent: schreibt englischen Prompt ─▶ FLUX erzeugt Bild ─▶ Bild im Chat
+ ├─ Dokumentanfrage? ("Gib mir die Reisekostenrichtlinie")
+ │    └─ Dokumentsuche: Dateinamen abgleichen ─▶ Link zum Dokument (ohne Sprachmodell)
  └─ sonst
-      └─ Wissensbasis durchsuchen ─▶ Werkzeug-Agent (Dokumente, Dateien) ─▶ Chat-Modell formuliert Antwort
+      └─ hybride Suche (Embeddings + BM25) ─▶ Werkzeug-Agent (Dokumente, Dateien) ─▶ Chat-Modell formuliert Antwort
 ```
 
 - **Werkzeug-Agent** (`AGENT_MODEL`): bekommt die passenden Dokumentauszüge mit und ruft bei Bedarf Tools auf. Braucht ein Modell mit gutem Tool-Calling.
 - **Chat-Modell** (`CHAT_MODEL`): schreibt aus Frage, Dokumenttreffern und Tool-Ergebnissen die endgültige Antwort. Ist es dasselbe Modell wie der Agent, entfällt dieser Schritt.
 - **Bild-Agent** (`IMAGE_PROMPT_MODEL`): macht aus dem Bildwunsch einen detaillierten englischen Prompt. Bezüge auf den bisherigen Chat („mach noch eins davon“) löst er über den Gesprächsverlauf auf. Ist kein Modell erreichbar, geht der Wunsch unverändert an FLUX.
+
+### Hybride Suche
+
+Die Wissensbasis sucht auf zwei Wegen und führt die Ergebnisse zusammen:
+
+- **Embeddings** finden Textabschnitte mit ähnlicher *Bedeutung*, auch bei anderer Wortwahl („Geld pro Kilometer“ → „Kilometerpauschale“).
+- **BM25** (Okapi BM25, `src/rag_chatpipline/bm25.py`) findet *exakte Begriffe*. Seltene Begriffe zählen mehr, Füllwörter wie „der“ oder „wie“ gar nicht. Hier sind Embeddings schwach: Abkürzungen, Firmennamen, Normen wie „ISO 10012“, Kennungen wie „DP-17“ oder Bestellnummern.
+- **Zusammenführung** per *Reciprocal Rank Fusion*: Jede Suche liefert ihre 20 besten Abschnitte, gezählt wird der Platz in beiden Listen. Ein Abschnitt, der in beiden weit oben steht, gewinnt. Gewichte muss man dafür nicht einstellen.
+
+In einem Vergleich mit ähnlichen Dokumenten, die sich nur in Kennungen unterscheiden, traf die hybride Suche bei 9 von 10 Fragen das richtige Dokument auf Platz 1, die reine Embedding-Suche bei 8 von 10. Mit `RETRIEVAL_MODE=dense` lässt sich zum Vergleich auf die reine Embedding-Suche umschalten. Grenze: BM25 kennt keine Wortformen, „Vorfall“ und „Vorfälle“ sind für BM25 verschiedene Wörter.
+
+### Dokumentsuche
+
+Wer ein bestimmtes Dokument *haben* will („Gib mir …“, „Zeig mir …“, „Wo finde ich …“, „Ich brauche …“, „Schick mir …“), bekommt es direkt als Link, ohne Sprachmodell und damit in Sekundenbruchteilen. Der Dateiname wird mit der Anfrage abgeglichen:
+
+- Groß- und Kleinschreibung, Umlaute, Bindestriche und Unterstriche spielen keine Rolle, kleine Tippfehler auch nicht.
+- Zusammengesetzte Wörter müssen den Dateinamen weitgehend abdecken: „Reisekosten-Richtlinie“ findet `Reisekostenrichtlinie.pdf`, aber „Richtlinie“ allein nicht `IT-Sicherheitsrichtlinie.pdf`.
+- Zahlen im Dateinamen (z. B. Jahreszahlen) entscheiden nur bei Gleichstand. Passen mehrere Dokumente gleich gut, bietet der Chatbot alle an.
+
+Fragen zum *Inhalt* („Was steht in der Reisekostenrichtlinie zu Hotels?“, „Wie hoch ist … laut …“) und Anfragen ohne passendes Dokument gehen wie bisher an Suche und Werkzeug-Agent.
+
+### Bildwünsche
 
 Erkannt wird ein Bildwunsch an einem Verb (erstelle, generiere, erzeuge, zeichne, male, mach, …) zusammen mit einem Bildwort (Bild, Foto, Grafik, Illustration, Zeichnung, Logo, …), auch auf Englisch. „Wie groß ist der Bildschirm?“ zählt also nicht dazu. Fällt ein Wunsch durch dieses Raster, kann der Werkzeug-Agent den Bild-Agenten über das Tool `generate_image` trotzdem aufrufen.
 
@@ -90,14 +116,15 @@ Erkannt wird ein Bildwunsch an einem Verb (erstelle, generiere, erzeuge, zeichne
 
 - **Antworten** erscheinen Wort für Wort. Darüber zeigt die Oberfläche die Arbeitsschritte (Wissensbasis, Tool-Aufrufe, Bild-Agent, Antwort formulieren). Bei Bildern steht dort auch der Prompt, den der Bild-Agent geschrieben hat.
 - **Einstellungen** (Benutzermenü oben rechts oder Zahnrad neben dem Eingabefeld): Chat-Modell, Werkzeug-Agent, Bild-Agent und Bildmodell wählen. Mehr dazu unter [Einstellungen](#einstellungen).
-- **Wissensquellen** (rechte Seitenleiste): Dokumente hochladen, ansehen und entfernen. Alternativ eine Datei an eine Nachricht anhängen.
+- **Wissensquellen** (rechte Seitenleiste): Dokumente hochladen, per Klick auf den Namen öffnen und entfernen. Alternativ eine Datei an eine Nachricht anhängen.
+- **Dokumente direkt:** „Gib mir die Reisekostenrichtlinie“ antwortet sofort mit einem Link zum Dokument.
 - **Alte Chats** (linke Seitenleiste): Chats werden in `memory/chainlit.db` gespeichert und lassen sich wieder öffnen. Der Gesprächsverlauf wird dabei für das Modell wiederhergestellt, auch nach einem Neustart.
 - **Vorlesen:** Button an jeder neuen Antwort (nicht in wieder geöffneten alten Chats).
 - **Nutzer:** Es gibt keinen Login. Alle teilen sich den Nutzer `lokal`. Steht ein Reverse-Proxy mit SSO davor, der den Header `X-Forwarded-User` setzt, hat jeder seine eigenen Chats und Einstellungen. Ohne vertrauenswürdigen Proxy lässt sich dieser Header fälschen.
 
 ## Einstellungen
 
-![Dialog "Einstellungen" mit Auswahl für Chat-Modell, Werkzeug-Agent, Bild-Agent und Bildmodell](docs/images/ui-einstellungen.png)
+![Dialog "Einstellungen" mit Auswahl für Chat-Modell, Werkzeug-Agent, Bild-Agent, Bildmodell und Embedding-Modell](docs/images/ui-einstellungen.png)
 
 | Einstellung | Wofür | Zur Auswahl |
 |---|---|---|
@@ -105,10 +132,12 @@ Erkannt wird ein Bildwunsch an einem Verb (erstelle, generiere, erzeuge, zeichne
 | Werkzeug-Agent | Dokumentsuche, Dateien | lokale Ollama-Modelle mit Tool-Calling |
 | Bild-Agent | schreibt die FLUX-Prompts | lokale Ollama-Sprachmodelle |
 | Bildmodell | erzeugt die Bilder | vollständig heruntergeladene Modelle unter `models/` |
+| Embedding-Modell (für alle Nutzer) | Bedeutungssuche in der Wissensbasis | lokale Ollama-Embedding-Modelle |
 
-- **Nur lokale Modelle:** Cloud-Modelle von Ollama (z. B. `gpt-oss:120b-cloud`) erscheinen absichtlich nicht, weil sie Daten an fremde Server schicken würden. Embedding-Modelle erscheinen ebenfalls nicht.
+- **Nur lokale Modelle:** Cloud-Modelle von Ollama (z. B. `gpt-oss:120b-cloud`) erscheinen absichtlich nicht, weil sie Daten an fremde Server schicken würden. Embedding-Modelle erscheinen nur im Feld *Embedding-Modell*.
 - **Speicherung:** Die Wahl gilt sofort und wird pro Nutzer in `memory/user_settings.json` gespeichert. Ist ein gespeichertes Modell nicht mehr installiert, nimmt die App den Standard aus der Konfiguration und, falls auch der fehlt, das erste verfügbare Modell.
 - **Gesprächsverlauf:** Ein Wechsel des Agent-Modells mitten im Chat behält den Verlauf.
+- **Embedding-Modell:** Es gehört zur gemeinsamen Wissensbasis und gilt deshalb für **alle** Nutzer (gespeichert in `memory/app_settings.json`). Jedes Embedding-Modell hat in Qdrant eine eigene Sammlung. Beim Wechsel liest die App die Dokumente aus dem Dokumentenordner mit dem neuen Modell ein, eine Meldung im Chat zeigt Beginn und Ende. Wechselt man zu einem früher genutzten Modell zurück, werden nur die inzwischen hinzugekommenen Dokumente eingelesen. Ist das eingestellte Modell nicht installiert und wurde noch keins gewählt, nimmt die App das erste installierte Embedding-Modell.
 - **Menüpunkt:** Chainlit bietet im Benutzermenü keine eigenen Einträge an. Den Punkt *Einstellungen* fügt `src/ui/public/user_menu_settings.js` ein. Fehlt er nach einem Chainlit-Update, öffnet das Zahnrad neben dem Eingabefeld denselben Dialog.
 
 Die REST-API (`POST /chat`) nutzt immer die Standardmodelle aus der Konfiguration.
@@ -142,7 +171,8 @@ Erzeugte Bilder liegen in `workspace/AIbilder/` und sind über `/images/{name}` 
 | `CHAT_MODEL` | `cas/teuken-7b-q4km:latest` | Chat-Modell: formuliert die Antworten (Teuken) |
 | `AGENT_MODEL` | `qwen3:1.7b` | Werkzeug-Agent: ruft Tools auf, braucht gutes Tool-Calling |
 | `IMAGE_PROMPT_MODEL` | wie `AGENT_MODEL` | Bild-Agent: schreibt aus dem Bildwunsch den englischen FLUX-Prompt |
-| `EMBEDDING_MODEL` | `nomic-embed-text` | Ollama-Embeddingmodell |
+| `EMBEDDING_MODEL` | `nomic-embed-text` | Ollama-Embeddingmodell (Standard, solange in den Einstellungen keins gewählt ist) |
+| `RETRIEVAL_MODE` | `hybrid` | `hybrid` (Embeddings + BM25) oder `dense` (nur Embeddings, zum Vergleich) |
 | `AGENT_REASONING` | leer | `true`/`false` schaltet das Denken des Agent-Modells ein/aus |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama-Adresse |
 | `WORKSPACE_DIR` | `./workspace` | Einziger Ordner, auf den der Agent zugreifen darf |
@@ -153,9 +183,7 @@ Erzeugte Bilder liegen in `workspace/AIbilder/` und sind über `/images/{name}` 
 | `IMAGE_KEEP_ALIVE` | `60` | Sekunden, die das Bildmodell nach dem letzten Bild im Arbeitsspeicher bleibt (`0` = sofort freigeben) |
 | `CORS_ORIGINS` | `http://localhost:3000` | Erlaubte Frontend-Origins, kommagetrennt |
 
-Die Modelle sind Standardwerte. Jeder Nutzer kann sie in den Einstellungen für sich ändern (außer dem Embedding-Modell).
-
-Wechselt man das Embedding-Modell, ändert sich die Vektorgröße. Dann `memory/qdrant/` löschen und die Dokumente neu hochladen.
+Die Modelle sind Standardwerte. Jeder Nutzer kann Chat-, Agent- und Bildmodelle in den Einstellungen für sich ändern. Das Embedding-Modell lässt sich dort für alle ändern, die Wissensbasis wird dann automatisch neu eingelesen.
 
 ## API
 
@@ -164,6 +192,7 @@ Wechselt man das Embedding-Modell, ändert sich die Vektorgröße. Dann `memory/
 | `POST /chat` `{message, chatId?}` | Agent-Antwort `{text, chatId, images[]}` (`/rag` ist ein Alias) |
 | `GET /documents`, `POST /documents`, `DELETE /documents/{name}` | Wissensbasis verwalten |
 | `GET /images/{name}` | erzeugte Bilder |
+| `GET /files/{name}` | Dokument der Wissensbasis zum Ansehen im Browser |
 | `GET /health` | Statusprüfung |
 
 Die API hält den Verlauf pro `chatId` nur im Arbeitsspeicher. Die Oberfläche stellt ihn aus der gespeicherten Historie wieder her.
@@ -186,7 +215,7 @@ Alles, was zur Laufzeit entsteht, steht in `.gitignore` und landet nicht im Repo
 |---|---|
 | `.venv/` | virtuelle Python-Umgebung (vom Installer) |
 | `models/` | Bildmodelle (vom Installer) |
-| `memory/` | Chat-Historie (`chainlit.db`), Vektordatenbank (`qdrant/`), Nutzereinstellungen (`user_settings.json`) |
+| `memory/` | Chat-Historie (`chainlit.db`), Vektordatenbank (`qdrant/`, eine Sammlung je Embedding-Modell), Nutzereinstellungen (`user_settings.json`), Einstellungen für alle (`app_settings.json`) |
 | `workspace/` | hochgeladene Dokumente (`Dateien/`), erzeugte Bilder (`AIbilder/`), Dateien des Agenten |
 
 ## Struktur
@@ -196,11 +225,12 @@ Alles, was zur Laufzeit entsteht, steht in `.gitignore` und landet nicht im Repo
 - `pyproject.toml`: Abhängigkeiten (Extras `dev` und `image`)
 - `src/Agents/`
   - `chat_agent.py`: Ablauf einer Nachricht, Werkzeug-Agent und Chat-Modell
+  - `document_lookup.py`: Dokumentsuche (Dokumentanfragen erkennen, Dateinamen abgleichen)
   - `image_agent.py`: Bild-Agent (Erkennen von Bildwünschen, Prompt schreiben, Bild erzeugen)
   - `image_backend.py`: FLUX über diffusers, Modelldownload, Platzhalter
   - `tools.py`: Tools des Werkzeug-Agenten (Wissensbasis, Dateisystem, Bild)
   - `models.py`: Modellwahl und Liste der lokalen Ollama-Modelle
-- `src/rag_chatpipline/`: `api_server.py` (FastAPI), `knowledge_base.py` (Qdrant), `config.py`
+- `src/rag_chatpipline/`: `api_server.py` (FastAPI), `knowledge_base.py` (Qdrant, hybride Suche), `bm25.py`, `config.py`
 - `src/ui/`: Chainlit-Oberfläche
   - `chainlit_app.py`, `history_db.py` (Chat-Historie), `user_settings.py` (Einstellungen pro Nutzer)
   - `.chainlit/config.toml`
@@ -221,6 +251,7 @@ Alles, was zur Laufzeit entsteht, steht in `.gitignore` und landet nicht im Repo
 | „Zu wenig freier Arbeitsspeicher für FLUX…“ im Chat | Andere Programme oder eine zweite Instanz des Chatbots schließen, dann erneut versuchen. |
 | Bildgenerierung bricht mit zu wenig Grafikspeicher ab | `IMAGE_SIZE` verkleinern (z. B. `512`) oder andere GPU-Programme schließen. |
 | Menüpunkt *Einstellungen* fehlt | Erscheint erst in einem geöffneten Chat. Alternativ das Zahnrad neben dem Eingabefeld nutzen. |
+| „Das Ollama-Modell 'nomic-embed-text' ist nicht installiert“ | `ollama pull nomic-embed-text` oder in den Einstellungen ein installiertes Embedding-Modell wählen. |
 | In den Einstellungen fehlen Modelle | Ollama läuft nicht oder das Modell ist ein Cloud- bzw. Embedding-Modell. Für den Werkzeug-Agenten erscheinen nur Modelle mit Tool-Calling. |
 
 ## Änderungen
@@ -231,6 +262,7 @@ Alles, was zur Laufzeit entsteht, steht in `.gitignore` und landet nicht im Repo
 - **Start:** `main.py` nutzt automatisch das Python aus `.venv` und meldet fehlende Pakete verständlich.
 - **Bildgenerierung:** FLUX.2 [klein] 4B ersetzt FLUX.1-schnell. Bildwünsche gehen direkt an den neuen Bild-Agenten statt an den Werkzeug-Agenten. Vor jedem Bild wird der Grafikspeicher von Ollama freigegeben. Die App prüft vor dem Laden den freien Arbeitsspeicher und gibt das Modell nach 60 Sekunden ohne Bild wieder frei (behebt Abstürze durch Speichermangel, bei denen auch VS Code beendet wurde).
 - **Einstellungen:** Neuer Menüpunkt im Benutzermenü. Chat-Modell, Werkzeug-Agent, Bild-Agent und Bildmodell sind pro Nutzer wählbar, angeboten werden nur lokale Modelle. Neue Umgebungsvariablen `IMAGE_PROMPT_MODEL`, `MODELS_DIR` und `IMAGE_KEEP_ALIVE`.
+- **Suche:** Hybride Suche aus Embeddings und BM25 mit Reciprocal Rank Fusion (`RETRIEVAL_MODE`). Neue deterministische Dokumentsuche: Dokumentanfragen werden ohne Sprachmodell beantwortet, mit Link zum Öffnen (`GET /files/{name}`). Dokumentnamen in der Seitenleiste lassen sich anklicken. Das Embedding-Modell ist in den Einstellungen wählbar (für alle Nutzer, mit automatischem Neueinlesen; eine Qdrant-Sammlung je Modell). Die bisherige Sammlung `documents` wird nicht mehr genutzt, ihre Dokumente werden beim ersten Start automatisch in die neue Sammlung eingelesen. Beides geht auf Verfahren aus der Praxisarbeit von 2023 zurück (hybrider Retriever, heuristisches Verfahren).
 - **Aufgeräumt:** Der Test der alten `soul.md`-Pipeline (`test_rag_pipeline_memory.py`) und eingecheckte Testreste (`tmp_memory_*`) sind entfernt. `.gitignore` deckt jetzt auch `models/` ab. Neue Tests für Bild-Agent, Modellwahl und Einstellungen.
 
 ## Verwendete Open-Source-Projekte

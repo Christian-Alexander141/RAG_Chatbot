@@ -1,20 +1,35 @@
 """Wissensbasis: eigene Dokumente einlesen, in Qdrant indexieren und durchsuchen."""
 from __future__ import annotations
 
+import logging
+import re
 import shutil
+import threading
+import weakref
 from pathlib import Path
 from typing import Any, Optional
 
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-from . import config
+from . import app_settings, config, ollama_models
+from .bm25 import BM25
+
+logger = logging.getLogger(__name__)
 
 TEXT_SUFFIXES = {".txt", ".md", ".mdx", ".json", ".csv", ".html", ".xml", ".yml", ".yaml", ".log"}
 SUPPORTED_SUFFIXES = TEXT_SUFFIXES | {".pdf", ".docx"}
 
-_embeddings = None
-_vector_store = None
+_client = None
+_vector_store = None  # Vector Store des gewählten Embedding-Modells
+_store_lock = threading.RLock()
+# BM25-Index je Vector Store, wird bei jeder Änderung der Wissensbasis neu aufgebaut
+_bm25_indexes: "weakref.WeakKeyDictionary[Any, tuple[BM25, dict[str, Document]]]" = weakref.WeakKeyDictionary()
+_bm25_lock = threading.Lock()
+
+# Hybride Suche: so viele Kandidaten liefert jede der beiden Suchen, bevor sie zusammengeführt werden
+SEARCH_CANDIDATES = 20
+RRF_K = 60  # übliche Konstante der Reciprocal Rank Fusion
 
 
 class KnowledgeBaseError(RuntimeError):
@@ -36,43 +51,109 @@ def require_ollama_model(model: str) -> None:
         raise KnowledgeBaseError(f"Ollama ist unter {config.OLLAMA_BASE_URL} nicht erreichbar: {exc}") from exc
 
 
-def get_embeddings():
-    global _embeddings
-    if _embeddings is None:
-        from langchain_ollama import OllamaEmbeddings
+def same_model(a: str, b: str) -> bool:
+    """Ollama ergänzt fehlende Tags um ":latest" ("nomic-embed-text" ist "nomic-embed-text:latest")."""
+    def full(name: str) -> str:
+        return name if ":" in name else f"{name}:latest"
+    return full(a) == full(b)
 
-        require_ollama_model(config.EMBEDDING_MODEL)
-        _embeddings = OllamaEmbeddings(model=config.EMBEDDING_MODEL, base_url=config.OLLAMA_BASE_URL)
-    return _embeddings
+
+def embedding_model() -> str:
+    """Das Embedding-Modell der Wissensbasis: in den Einstellungen gewählt (gilt für alle), sonst EMBEDDING_MODEL."""
+    return app_settings.get("embedding_model") or config.EMBEDDING_MODEL
+
+
+def collection_name(model: str) -> str:
+    """Jedes Embedding-Modell hat eine eigene Collection, denn Vektoren verschiedener Modelle passen nicht zusammen."""
+    return f"{config.COLLECTION_NAME}-{re.sub(r'[^a-z0-9]+', '-', model.lower()).strip('-')}"
+
+
+def _get_client():
+    global _client
+    if _client is None:
+        from qdrant_client import QdrantClient
+
+        config.QDRANT_PATH.mkdir(parents=True, exist_ok=True)
+        _client = QdrantClient(path=str(config.QDRANT_PATH))  # der lokale Modus erlaubt nur einen Client je Ordner
+    return _client
+
+
+def _make_embeddings(model: str):
+    from langchain_ollama import OllamaEmbeddings
+
+    require_ollama_model(model)
+    return OllamaEmbeddings(model=model, base_url=config.OLLAMA_BASE_URL)
+
+
+def _open_store(model: str):
+    from langchain_qdrant import QdrantVectorStore
+    from qdrant_client.models import Distance, VectorParams
+
+    embeddings = _make_embeddings(model)
+    client = _get_client()
+    name = collection_name(model)
+    size = len(embeddings.embed_query("dimension probe"))
+    if not client.collection_exists(name):
+        client.create_collection(name, vectors_config=VectorParams(size=size, distance=Distance.COSINE))
+    elif client.get_collection(name).config.params.vectors.size != size:
+        raise KnowledgeBaseError(
+            f"Die Collection '{name}' passt nicht zu '{model}' (andere Vektorgröße). Bitte {config.QDRANT_PATH} löschen."
+        )
+    return QdrantVectorStore(client=client, collection_name=name, embedding=embeddings)
+
+
+def _add_missing_documents(store: Any) -> int:
+    """Liest Dokumente aus DOCUMENTS_DIR ein, die in der Collection fehlen: alle bei einem neuen Embedding-Modell,
+    sonst die seit dem letzten Wechsel hochgeladenen. Gibt die Anzahl zurück."""
+    known = list_sources(store)
+    added = 0
+    for path in sorted(config.DOCUMENTS_DIR.rglob("*")) if config.DOCUMENTS_DIR.exists() else []:
+        source = str(path.relative_to(config.DOCUMENTS_DIR))
+        if path.is_file() and path.suffix.lower() in SUPPORTED_SUFFIXES and source not in known:
+            try:
+                ingest_file(path, source, vector_store=store)
+                added += 1
+            except KnowledgeBaseError:
+                logger.warning("'%s' konnte nicht eingelesen werden", source, exc_info=True)
+    if added:
+        logger.info("%d Dokumente in %s eingelesen", added, store.collection_name)
+    return added
+
+
+def _available_embedding_model() -> str:
+    """Das gewählte Modell. Wurde keins ausdrücklich gewählt und ist der Standard nicht installiert,
+    das erste installierte Embedding-Modell (und diese Wahl merken)."""
+    model = embedding_model()
+    if app_settings.get("embedding_model"):
+        return model
+    installed = ollama_models.with_capability("embedding")
+    if installed and not any(same_model(model, name) for name in installed):
+        logger.warning("Embedding-Modell %s ist nicht installiert, nutze %s", model, installed[0])
+        app_settings.put("embedding_model", installed[0])
+        return installed[0]
+    return model
 
 
 def get_vector_store():
     global _vector_store
-    if _vector_store is None:
-        from langchain_qdrant import QdrantVectorStore
-        from qdrant_client import QdrantClient
-        from qdrant_client.models import Distance, VectorParams
+    with _store_lock:
+        if _vector_store is None:
+            store = _open_store(_available_embedding_model())
+            _add_missing_documents(store)
+            _vector_store = store
+        return _vector_store
 
-        embeddings = get_embeddings()
-        config.QDRANT_PATH.mkdir(parents=True, exist_ok=True)
-        client = QdrantClient(path=str(config.QDRANT_PATH))
-        size = len(embeddings.embed_query("dimension probe"))
 
-        if not client.collection_exists(config.COLLECTION_NAME):
-            client.create_collection(
-                collection_name=config.COLLECTION_NAME,
-                vectors_config=VectorParams(size=size, distance=Distance.COSINE),
-            )
-        else:
-            existing = client.get_collection(config.COLLECTION_NAME).config.params.vectors.size
-            if existing != size:
-                raise KnowledgeBaseError(
-                    f"Die Collection '{config.COLLECTION_NAME}' hat Vektorgröße {existing}, das Embedding-Modell "
-                    f"'{config.EMBEDDING_MODEL}' liefert {size}. Bitte {config.QDRANT_PATH} löschen und neu indexieren."
-                )
-
-        _vector_store = QdrantVectorStore(client=client, collection_name=config.COLLECTION_NAME, embedding=embeddings)
-    return _vector_store
+def set_embedding_model(model: str) -> int:
+    """Wechselt das Embedding-Modell für alle Nutzer. Dokumente, die mit diesem Modell noch nicht eingelesen sind,
+    werden jetzt eingelesen (das kann dauern). Gibt deren Anzahl zurück."""
+    global _vector_store
+    with _store_lock:
+        store = _open_store(model)
+        added = _add_missing_documents(store)
+        app_settings.put("embedding_model", model)
+        _vector_store = store
+        return added
 
 
 def load_file(path: Path, source: Optional[str] = None) -> list[Document]:
@@ -113,6 +194,7 @@ def ingest_file(path: Path, source: Optional[str] = None, vector_store: Any = No
     chunks = RecursiveCharacterTextSplitter(chunk_size=800, chunk_overlap=120).split_documents(documents)
     delete_source(source, vector_store=store)
     store.add_documents(chunks)
+    _bm25_indexes.pop(store, None)
     return len(chunks)
 
 
@@ -133,8 +215,18 @@ def add_document(source_path: Path, name: str, vector_store: Any = None) -> int:
 
 
 def remove_document(name: str, vector_store: Any = None) -> None:
+    """Entfernt ein Dokument, und zwar aus den Collections aller Embedding-Modelle. Sonst tauchte es nach einem
+    Wechsel zurück auf ein früheres Modell wieder auf."""
     name = Path(name).name
-    delete_source(name, vector_store=vector_store)
+    if vector_store is not None:
+        delete_source(name, vector_store=vector_store)
+    else:
+        store = get_vector_store()
+        delete_source(name, vector_store=store)
+        prefix = f"{config.COLLECTION_NAME}-"
+        for collection in store.client.get_collections().collections:
+            if collection.name.startswith(prefix) and collection.name != store.collection_name:
+                store.client.delete(collection_name=collection.name, points_selector=_source_filter(name))
     (config.DOCUMENTS_DIR / name).unlink(missing_ok=True)
 
 
@@ -162,6 +254,7 @@ def _source_filter(source: str):
 def delete_source(source: str, vector_store: Any = None) -> None:
     store = vector_store or get_vector_store()
     store.client.delete(collection_name=store.collection_name, points_selector=_source_filter(source))
+    _bm25_indexes.pop(store, None)
 
 
 def list_sources(vector_store: Any = None) -> dict[str, int]:
@@ -181,6 +274,41 @@ def list_sources(vector_store: Any = None) -> dict[str, int]:
             return counts
 
 
+def _bm25_index(store: Any) -> tuple[BM25, dict[str, Document]]:
+    """BM25 über alle Textabschnitte der Wissensbasis. Wird erst bei Bedarf gebaut und dann wiederverwendet."""
+    with _bm25_lock:
+        if store not in _bm25_indexes:
+            chunks: dict[str, Document] = {}
+            offset = None
+            while True:
+                points, offset = store.client.scroll(
+                    collection_name=store.collection_name, limit=256, offset=offset, with_payload=True
+                )
+                for point in points:
+                    payload = point.payload or {}
+                    metadata = {**payload.get("metadata", {}), "_id": str(point.id)}
+                    chunks[str(point.id)] = Document(page_content=payload.get("page_content", ""), metadata=metadata)
+                if offset is None:
+                    break
+            _bm25_indexes[store] = (BM25({i: d.page_content for i, d in chunks.items()}), chunks)
+        return _bm25_indexes[store]
+
+
 def search(query: str, k: int = 4, vector_store: Any = None) -> list[Document]:
+    """Hybride Suche: Embeddings (Bedeutung) und BM25 (exakte Begriffe), zusammengeführt per Reciprocal Rank Fusion.
+    Mit RETRIEVAL_MODE=dense nur Embeddings, z. B. zum Vergleich."""
     store = vector_store or get_vector_store()
-    return store.similarity_search(query, k=k)
+    dense = store.similarity_search(query, k=SEARCH_CANDIDATES if config.RETRIEVAL_MODE == "hybrid" else k)
+    if config.RETRIEVAL_MODE != "hybrid":
+        return dense[:k]
+
+    bm25, chunks = _bm25_index(store)
+    scores: dict[str, float] = {}
+    found: dict[str, Document] = {}
+    lexical = [(chunk_id, chunks[chunk_id]) for chunk_id, _ in bm25.search(query, SEARCH_CANDIDATES)]
+    semantic = [(doc.metadata.get("_id"), doc) for doc in dense]
+    for ranking in (semantic, lexical):
+        for rank, (chunk_id, doc) in enumerate(ranking):
+            scores[chunk_id] = scores.get(chunk_id, 0.0) + 1 / (RRF_K + rank + 1)
+            found.setdefault(chunk_id, doc)
+    return [found[i] for i in sorted(scores, key=scores.__getitem__, reverse=True)[:k]]

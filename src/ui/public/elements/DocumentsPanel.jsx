@@ -56,7 +56,10 @@ export default function DocumentsPanel() {
         {docs.length === 0 && <li className="text-muted-foreground">Noch keine Dokumente.</li>}
         {docs.map((doc) => (
           <li key={doc.name} className="flex items-center justify-between gap-2">
-            <span className="truncate" title={doc.name}>{doc.name} <span className="text-muted-foreground">({doc.chunks})</span></span>
+            <a className="truncate hover:underline" href={"/files/" + encodeURIComponent(doc.name)} target="_blank"
+              rel="noreferrer" title={doc.name + " öffnen"}>
+              {doc.name} <span className="text-muted-foreground">({doc.chunks})</span>
+            </a>
             <Button variant="ghost" size="icon" onClick={() => remove(doc.name)} title="Entfernen">
               <Trash2 className="h-4 w-4" />
             </Button>

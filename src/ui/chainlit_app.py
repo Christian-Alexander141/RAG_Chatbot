@@ -21,7 +21,7 @@ from rag_chatpipline import knowledge_base
 HELP = (
     "Ich beantworte Fragen zu euren Dokumenten, arbeite mit Dateien im Workspace und erzeuge Bilder.\n\n"
     "- **Dokumente** verwaltest du in der Seitenleiste *Wissensquellen* (rechts). Du kannst auch eine Datei "
-    "an eine Nachricht anhängen.\n"
+    "an eine Nachricht anhängen. Ein Dokument direkt bekommst du z. B. mit *„Gib mir die Reisekostenrichtlinie“*.\n"
     "- **Alte Chats** findest du in der linken Seitenleiste.\n"
     "- **Modelle** wählst du im Benutzermenü (oben rechts) unter *Einstellungen*."
 )
@@ -32,6 +32,10 @@ SETTINGS_LABELS = {
     "image_prompt": ("Bild-Agent", "Schreibt aus deinem Bildwunsch den Prompt für das Bildmodell."),
     "image": ("Bildmodell", "Erzeugt die Bilder. Weitere Modelle legt man unter models/ ab."),
 }
+EMBEDDING_LABEL = (
+    "Embedding-Modell (für alle Nutzer)",
+    "Sucht in der Wissensbasis nach Bedeutung. Ein Wechsel liest alle Dokumente neu ein.",
+)
 
 TOOL_LABELS = {
     "search_documents": "Dokumente durchsuchen",
@@ -41,6 +45,7 @@ TOOL_LABELS = {
     "make_directory": "Ordner anlegen",
     "search_files": "Dateien suchen",
     "generate_image": "Bild erzeugen",
+    "find_document": "Dokument suchen",
 }
 
 
@@ -77,6 +82,13 @@ async def _send_settings() -> None:
         current = getattr(choice, key)
         values = available[key] or [current]  # ohne Ollama bzw. ohne heruntergeladenes Modell: nur die aktuelle Wahl
         widgets.append(Select(id=key, label=label, values=values, initial_value=current, description=description))
+
+    # Das Embedding-Modell gehört zur gemeinsamen Wissensbasis, nicht zum Nutzer.
+    current = knowledge_base.embedding_model()
+    values = llms["embedding"] or [current]
+    initial = next((v for v in values if knowledge_base.same_model(v, current)), values[0])
+    label, description = EMBEDDING_LABEL
+    widgets.append(Select(id="embedding", label=label, values=values, initial_value=initial, description=description))
     await cl.ChatSettings(widgets).send()
 
 
@@ -86,6 +98,19 @@ async def settings_update(settings: dict) -> None:
     choice = ModelChoice(**{key: settings.get(key) or getattr(current, key) for key in SETTINGS_LABELS})
     cl.user_session.set("models", choice)
     await cl.make_async(user_settings.save)(_user_id(), choice)
+
+    embedding = settings.get("embedding")
+    if embedding and not knowledge_base.same_model(embedding, knowledge_base.embedding_model()):
+        note = cl.Message(f"Die Wissensbasis wird mit **{embedding}** eingelesen. Das gilt für alle Nutzer und kann "
+                          "bei vielen Dokumenten etwas dauern …")
+        await note.send()
+        try:
+            added = await cl.make_async(knowledge_base.set_embedding_model)(embedding)
+            note.content = f"✅ Die Wissensbasis nutzt jetzt **{embedding}** ({added} Dokumente neu eingelesen)."
+        except Exception as exc:
+            note.content = f"⚠️ Das Embedding-Modell konnte nicht gewechselt werden: {exc}"
+        await note.update()
+        await _open_documents_panel()
 
 
 @cl.on_chat_start
@@ -153,6 +178,9 @@ async def on_message(message: cl.Message) -> None:
                 await current.send()
             elif kind == "image_agent_start":
                 current = cl.Step(name="Bild-Agent arbeitet", type="run")
+                await current.send()
+            elif kind == "lookup_start":
+                current = cl.Step(name="Dokumentsuche", type="run")
                 await current.send()
             elif kind == "tool_start":
                 step = cl.Step(name=TOOL_LABELS.get(event["name"], event["name"]), type="tool", parent_id=current.id)

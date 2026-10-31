@@ -6,7 +6,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src" / "ui"))
 import user_settings  # noqa: E402
 from Agents import models  # noqa: E402
 from Agents.models import ModelChoice  # noqa: E402
-from rag_chatpipline import config  # noqa: E402
+from rag_chatpipline import config, ollama_models  # noqa: E402
 
 
 def test_settings_are_saved_per_user(monkeypatch, tmp_path):
@@ -27,19 +27,22 @@ def test_resolve_falls_back_when_model_is_gone(monkeypatch):
     assert choice.image == config.FLUX_MODEL_DIR.name  # keine Liste: Standard bleibt
 
 
-def test_language_models_skip_cloud_and_embedding_models(monkeypatch):
+def test_language_models_are_sorted_by_capability_without_cloud_models(monkeypatch):
     tags = {"models": [
         {"name": "qwen3.5:2b"}, {"name": "mistral:7b"}, {"name": "granite-embedding:278m"},
         {"name": "gpt-oss:120b-cloud", "remote_host": "https://ollama.com:443"},
     ]}
     caps = {"qwen3.5:2b": ["completion", "tools"], "mistral:7b": ["completion"], "granite-embedding:278m": ["embedding"]}
-    monkeypatch.setattr(models, "_ollama", lambda path, payload=None: tags if path == "/api/tags" else {"capabilities": caps[payload["model"]]})
-    assert models.language_models() == {"chat": ["mistral:7b", "qwen3.5:2b"], "tools": ["qwen3.5:2b"]}
+    monkeypatch.setattr(ollama_models, "_ollama",
+                        lambda path, payload=None: tags if path == "/api/tags" else {"capabilities": caps[payload["model"]]})
+    assert models.language_models() == {
+        "chat": ["mistral:7b", "qwen3.5:2b"], "tools": ["qwen3.5:2b"], "embedding": ["granite-embedding:278m"],
+    }
 
 
 def test_language_models_without_ollama(monkeypatch):
     def offline(*args, **kwargs):
         raise ConnectionError("aus")
 
-    monkeypatch.setattr(models, "_ollama", offline)
-    assert models.language_models() == {"chat": [], "tools": []}
+    monkeypatch.setattr(ollama_models, "_ollama", offline)
+    assert models.language_models() == {"chat": [], "tools": [], "embedding": []}

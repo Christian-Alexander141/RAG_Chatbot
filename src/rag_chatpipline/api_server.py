@@ -6,7 +6,7 @@ from typing import Optional
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import RedirectResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -104,6 +104,16 @@ def upload_documents(files: list[UploadFile] = File(...)) -> list[DocumentInfo]:
 @app.delete("/documents/{name}", status_code=204)
 def delete_document(name: str) -> None:
     knowledge_base.remove_document(name)
+
+
+@app.get("/files/{name:path}")
+def document_file(name: str) -> FileResponse:
+    """Liefert ein Dokument der Wissensbasis zum Ansehen im Browser (Links der Dokumentsuche und der Seitenleiste)."""
+    root = config.DOCUMENTS_DIR.resolve()
+    path = (root / name).resolve()
+    if root not in path.parents or not path.is_file():
+        raise HTTPException(status_code=404, detail="Dokument nicht gefunden.")
+    return FileResponse(path, filename=path.name, content_disposition_type="inline")
 
 
 app.mount("/images", StaticFiles(directory=config.IMAGES_DIR), name="images")
