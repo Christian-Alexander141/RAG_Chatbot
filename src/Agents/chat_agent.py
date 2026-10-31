@@ -3,6 +3,7 @@
 - Agent-Modell (AGENT_MODEL, z. B. qwen3:1.7b): ruft die Tools auf (Dateisystem, Bild, Suche).
 - Chat-Modell (CHAT_MODEL, z. B. Teuken): formuliert aus Frage, Dokumenttreffern und Tool-Ergebnissen
   die endgültige Antwort. Sind beide Modelle gleich, entfällt dieser zweite Schritt.
+- Bildwünsche ("Erstelle ein Bild von ...") gehen statt an den Werkzeug-Agenten direkt an den Bild-Agenten.
 """
 from __future__ import annotations
 
@@ -18,6 +19,8 @@ from langgraph.checkpoint.memory import InMemorySaver
 
 from rag_chatpipline import config, knowledge_base
 
+from . import image_agent
+from .models import ModelChoice
 from .tools import TOOLS, retrieve_context
 
 logger = logging.getLogger(__name__)
@@ -32,7 +35,7 @@ Werkzeuge:
   sage das offen, statt zu raten. Mit search_documents kannst du gezielt nachsuchen.
 - Dateisystem-Tools (list_files, read_file, write_file, make_directory, search_files): Du arbeitest nur
   im Workspace. Überschreibe Dateien nur, wenn der Nutzer es ausdrücklich verlangt.
-- generate_image: Für Bildwünsche. Schreibe den Prompt auf Englisch. Das Bild wird dem Nutzer
+- generate_image: Für Bildwünsche. Beschreibe das gewünschte Bild. Es wird dem Nutzer
   automatisch angezeigt."""
 
 CHAT_PROMPT = """Du bist der interne Assistent des Unternehmens und läufst vollständig lokal.
@@ -46,8 +49,11 @@ das offen. Wurde ein Bild erzeugt, erwähne nur kurz, dass es unten angezeigt wi
 MAX_TOOL_OUTPUT = 1500
 MAX_HISTORY_MESSAGES = 20
 
-_agent = None
-_chat_model = None
+# Je gewähltem Modell ein Agent bzw. Chat-Modell. Der Verlauf liegt in einem gemeinsamen Speicher,
+# damit er erhalten bleibt, wenn jemand das Agent-Modell wechselt.
+_agents: dict[str, Any] = {}
+_chat_models: dict[tuple[str, str], Any] = {}
+_checkpointer = InMemorySaver()
 _histories: dict[str, list[BaseMessage]] = {}
 
 
@@ -56,6 +62,7 @@ class TurnContext:
     """Pro Anfrage einmal gesucht und von Agent und Chat-Modell gemeinsam genutzt."""
 
     documents: str = ""
+    models: Optional[ModelChoice] = None
 
 
 @dynamic_prompt
@@ -68,13 +75,15 @@ def add_retrieved_context(request: ModelRequest) -> str:
     return f"{AGENT_PROMPT}\n\nTreffer aus den Firmendokumenten:\n{documents}"
 
 
-def build_agent(model: Any = None, checkpointer: Any = None, tools: Optional[list] = None):
+def build_agent(model: Any = None, checkpointer: Any = None, tools: Optional[list] = None,
+                model_name: Optional[str] = None):
     if model is None:
         from langchain_ollama import ChatOllama
 
-        knowledge_base.require_ollama_model(config.AGENT_MODEL)
+        model_name = model_name or config.AGENT_MODEL
+        knowledge_base.require_ollama_model(model_name)
         model = ChatOllama(
-            model=config.AGENT_MODEL,
+            model=model_name,
             base_url=config.OLLAMA_BASE_URL,
             temperature=0.3,
             reasoning=config.AGENT_REASONING,
@@ -88,29 +97,30 @@ def build_agent(model: Any = None, checkpointer: Any = None, tools: Optional[lis
     )
 
 
-def build_chat_model():
+def build_chat_model(name: Optional[str] = None, agent_name: Optional[str] = None):
     """Chat-Modell für die Schlussantwort, oder None, wenn das Agent-Modell selbst antwortet."""
-    if config.CHAT_MODEL == config.AGENT_MODEL:
+    name = name or config.CHAT_MODEL
+    if name == (agent_name or config.AGENT_MODEL):
         return None
     from langchain_ollama import ChatOllama
 
-    knowledge_base.require_ollama_model(config.CHAT_MODEL)
-    return ChatOllama(model=config.CHAT_MODEL, base_url=config.OLLAMA_BASE_URL, temperature=0.3)
+    knowledge_base.require_ollama_model(name)
+    return ChatOllama(model=name, base_url=config.OLLAMA_BASE_URL, temperature=0.3)
 
 
-def get_agent():
-    global _agent
-    if _agent is None:
+def get_agent(model_name: Optional[str] = None):
+    name = model_name or config.AGENT_MODEL
+    if name not in _agents:
         config.ensure_dirs()
-        _agent = build_agent()
-    return _agent
+        _agents[name] = build_agent(checkpointer=_checkpointer, model_name=name)
+    return _agents[name]
 
 
-def get_chat_model():
-    global _chat_model
-    if _chat_model is None:
-        _chat_model = build_chat_model() or False  # False = bewusst kein zweites Modell
-    return _chat_model or None
+def get_chat_model(name: Optional[str] = None, agent_name: Optional[str] = None):
+    key = (name or config.CHAT_MODEL, agent_name or config.AGENT_MODEL)
+    if key not in _chat_models:
+        _chat_models[key] = build_chat_model(*key)  # None = bewusst kein zweites Modell
+    return _chat_models[key]
 
 
 def _writer_messages(history: list[BaseMessage], question: str, documents: str,
@@ -125,12 +135,13 @@ def _writer_messages(history: list[BaseMessage], question: str, documents: str,
     return [SystemMessage(CHAT_PROMPT), *history, HumanMessage("\n\n".join(sections))]
 
 
-def seed_history(chat_id: str, exchanges: list[tuple[str, str]], agent: Any = None) -> None:
+def seed_history(chat_id: str, exchanges: list[tuple[str, str]], agent: Any = None,
+                 model_name: Optional[str] = None) -> None:
     """Stellt den Verlauf eines gespeicherten Chats wieder her (nach Neustart oder beim Öffnen eines alten Chats).
 
     exchanges sind (Rolle, Text) mit Rolle "user" oder "assistant". Ein laufender Verlauf wird nicht überschrieben.
     """
-    agent = agent or get_agent()
+    agent = agent or get_agent(model_name)
     thread = {"configurable": {"thread_id": chat_id}}
     if agent.get_state(thread).values.get("messages"):
         return
@@ -141,32 +152,14 @@ def seed_history(chat_id: str, exchanges: list[tuple[str, str]], agent: Any = No
     _histories.setdefault(chat_id, messages[-MAX_HISTORY_MESSAGES:])
 
 
-def chat_stream(message: str, chat_id: Optional[str] = None, agent: Any = None,
-                chat_model: Any = None) -> Iterator[dict[str, Any]]:
-    """Wie chat(), liefert aber Ereignisse, sobald sie eintreten (Fortschritt und Antwort-Tokens).
-
-    Ereignisse (Schlüssel "event"): start, retrieval_start, retrieval_end, agent_start, tool_start, tool_end,
-    write_start, token, done. "done" enthält unter "result" das Ergebnis wie chat().
-    """
-    chat_id = chat_id or f"chat-{uuid.uuid4().hex[:12]}"
-    agent = agent or get_agent()
-    chat_model = chat_model or get_chat_model()
-    yield {"event": "start", "chat_id": chat_id}
-
-    yield {"event": "retrieval_start"}
-    try:
-        documents = retrieve_context(message, k=3)
-    except Exception:
-        logger.warning("Wissensbasis nicht verfügbar", exc_info=True)
-        documents = ""
-    yield {"event": "retrieval_end", "documents": documents}
-
+def _run_tool_agent(message: str, chat_id: str, agent: Any, context: TurnContext):
+    """Lässt den Werkzeug-Agenten arbeiten, meldet seine Tool-Aufrufe und gibt die neuen Nachrichten zurück."""
     yield {"event": "agent_start"}
     turn: list[BaseMessage] = []
     for update in agent.stream(
         {"messages": [HumanMessage(message)]},
         config={"configurable": {"thread_id": chat_id}},
-        context=TurnContext(documents=documents),
+        context=context,
         stream_mode="updates",
     ):
         for node_output in update.values():
@@ -178,6 +171,52 @@ def chat_stream(message: str, chat_id: Optional[str] = None, agent: Any = None,
                         yield {"event": "tool_start", "id": call["id"], "name": call["name"], "args": call["args"]}
                 elif isinstance(m, ToolMessage):
                     yield {"event": "tool_end", "id": m.tool_call_id, "name": m.name, "output": str(m.content)}
+    return turn
+
+
+def _run_image_agent(message: str, chat_id: str, agent: Any, models: ModelChoice):
+    """Gibt einen Bildwunsch an den Bild-Agenten. Liefert dieselben Ereignisse wie ein generate_image-Aufruf."""
+    yield {"event": "image_agent_start"}
+    thread = {"configurable": {"thread_id": chat_id}}
+    history = agent.get_state(thread).values.get("messages", [])
+    prompt = image_agent.write_prompt(message, history, model_name=models.image_prompt)
+    call_id = f"image-{uuid.uuid4().hex[:8]}"
+    yield {"event": "tool_start", "id": call_id, "name": "generate_image", "args": {"prompt": prompt}}
+    content, artifact = image_agent.generate(prompt, models.image)
+    yield {"event": "tool_end", "id": call_id, "name": "generate_image", "output": content}
+
+    draft = "Hier ist das Bild." if artifact else content
+    # Der Werkzeug-Agent soll im weiteren Gespräch wissen, dass ein Bild erzeugt wurde.
+    agent.update_state(thread, {"messages": [HumanMessage(message), AIMessage(draft)]}, as_node="model")
+    return [ToolMessage(content, artifact=artifact, name="generate_image", tool_call_id=call_id), AIMessage(draft)]
+
+
+def chat_stream(message: str, chat_id: Optional[str] = None, agent: Any = None,
+                chat_model: Any = None, models: Optional[ModelChoice] = None) -> Iterator[dict[str, Any]]:
+    """Wie chat(), liefert aber Ereignisse, sobald sie eintreten (Fortschritt und Antwort-Tokens).
+
+    Ereignisse (Schlüssel "event"): start, retrieval_start, retrieval_end, agent_start oder image_agent_start,
+    tool_start, tool_end, write_start, token, done. "done" enthält unter "result" das Ergebnis wie chat().
+    models gibt die Modelle für diesen Zug vor (Einstellungen des Nutzers), sonst gilt die Konfiguration.
+    """
+    chat_id = chat_id or f"chat-{uuid.uuid4().hex[:12]}"
+    models = models or ModelChoice.defaults()
+    agent = agent or get_agent(models.agent)
+    chat_model = chat_model or get_chat_model(models.chat, models.agent)
+    yield {"event": "start", "chat_id": chat_id}
+
+    if image_agent.is_image_request(message):
+        documents = ""
+        turn = yield from _run_image_agent(message, chat_id, agent, models)
+    else:
+        yield {"event": "retrieval_start"}
+        try:
+            documents = retrieve_context(message, k=3)
+        except Exception:
+            logger.warning("Wissensbasis nicht verfügbar", exc_info=True)
+            documents = ""
+        yield {"event": "retrieval_end", "documents": documents}
+        turn = yield from _run_tool_agent(message, chat_id, agent, TurnContext(documents, models))
 
     tool_messages = [m for m in turn if isinstance(m, ToolMessage)]
     images = [m.artifact["name"] for m in tool_messages if isinstance(m.artifact, dict) and "name" in m.artifact]
@@ -206,12 +245,13 @@ def chat_stream(message: str, chat_id: Optional[str] = None, agent: Any = None,
     yield {"event": "done", "result": {"chat_id": chat_id, "text": text, "images": images}}
 
 
-def chat(message: str, chat_id: Optional[str] = None, agent: Any = None, chat_model: Any = None) -> dict[str, Any]:
+def chat(message: str, chat_id: Optional[str] = None, agent: Any = None, chat_model: Any = None,
+         models: Optional[ModelChoice] = None) -> dict[str, Any]:
     """Schickt eine Nachricht durch Agent und Chat-Modell. Der Verlauf wird pro chat_id gehalten.
 
     Gibt {"chat_id", "text", "images"} zurück; images sind die in diesem Zug erzeugten Bilder.
     """
-    for event in chat_stream(message, chat_id, agent, chat_model):
+    for event in chat_stream(message, chat_id, agent, chat_model, models):
         if event["event"] == "done":
             return event["result"]
     raise RuntimeError("chat_stream ist ohne Ergebnis beendet worden")

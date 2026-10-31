@@ -8,6 +8,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from rag_chatpipline import config  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def no_prompt_model(monkeypatch):
+    """Der Bild-Agent fragt in Tests kein echtes Ollama-Modell; der Bildwunsch geht unverändert weiter."""
+    from Agents import image_agent
+
+    monkeypatch.setattr(image_agent, "get_prompt_model", lambda name=None: None)
+
+
 @pytest.fixture
 def workspace(tmp_path, monkeypatch):
     """Isolierter Workspace, damit Tests nie echte Daten anfassen."""

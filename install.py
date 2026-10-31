@@ -1,12 +1,13 @@
-"""Richtet die virtuelle Umgebung .venv ein und installiert die Abhängigkeiten aus pyproject.toml.
+"""Richtet die virtuelle Umgebung .venv ein, installiert die Abhängigkeiten aus pyproject.toml
+und lädt einmalig das Bildmodell FLUX.2 [klein] 4B nach models/.
 
 Läuft unter Linux, WSL, macOS und Windows. Bereits erledigte Schritte werden übersprungen.
 Erneut installiert wird nur, wenn sich pyproject.toml oder die gewählten Extras geändert haben.
 
-Aufruf: python install.py [--dev] [--image] [--force]
-  --dev     Test-Pakete (pytest, httpx)
-  --image   FLUX-Bildgenerierung (torch, diffusers, ...; mehrere GB)
-  --force   .venv neu anlegen und alles neu installieren
+Aufruf: python install.py [--dev] [--no-image] [--force]
+  --dev        Test-Pakete (pytest, httpx)
+  --no-image   ohne Bildgenerierung (spart PyTorch und etwa 16 GB Modelldownload)
+  --force      .venv neu anlegen und alles neu installieren
 """
 from __future__ import annotations
 
@@ -23,6 +24,7 @@ ROOT = Path(__file__).resolve().parent
 VENV = ROOT / ".venv"
 STAMP = VENV / ".install-stamp"
 WINDOWS = os.name == "nt"
+TORCH_INDEX = "https://download.pytorch.org/whl/"
 
 
 def venv_python(windows: bool = WINDOWS) -> Path:
@@ -84,11 +86,39 @@ def ensure_venv(force: bool) -> None:
     create_venv()
 
 
+def nvidia_gpu() -> tuple[float, int] | None:
+    """(Compute Capability, Treiber-Hauptversion) der ersten NVIDIA-GPU, oder None ohne NVIDIA-GPU."""
+    smi = shutil.which("nvidia-smi")
+    if not smi:
+        return None
+    result = subprocess.run(
+        [smi, "--query-gpu=compute_cap,driver_version", "--format=csv,noheader"], capture_output=True, text=True
+    )
+    try:
+        capability, driver = (value.strip() for value in result.stdout.splitlines()[0].split(","))
+        return float(capability), int(driver.split(".")[0])
+    except (IndexError, ValueError):
+        return None
+
+
+def torch_variant() -> str | None:
+    """Passende PyTorch-Variante von download.pytorch.org, oder None für den Standard von PyPI."""
+    if sys.platform == "darwin":
+        return None
+    gpu = nvidia_gpu()
+    if gpu is None:
+        return "cpu"  # spart die mehrere GB großen CUDA-Bibliotheken
+    capability, driver = gpu
+    # CUDA 13 braucht Treiber 580+ und unterstützt GPUs vor Turing (z. B. GTX 10xx) nicht mehr.
+    return "cu126" if capability < 7.5 or driver < 580 else "cu130"
+
+
 def install(extras: list[str], force: bool) -> None:
     target = f".[{','.join(extras)}]" if extras else "."
+    torch = torch_variant() if "image" in extras else None
     # Zeilenenden vereinheitlichen, damit eine Windows-Kopie mit CRLF denselben Stempel ergibt.
     pyproject = (ROOT / "pyproject.toml").read_bytes().replace(b"\r\n", b"\n")
-    stamp = f"{hashlib.sha256(pyproject).hexdigest()} {target}"
+    stamp = f"{hashlib.sha256(pyproject).hexdigest()} {target} torch={torch}"
 
     if not force and STAMP.exists() and STAMP.read_text().strip() == stamp:
         print(f"Abhängigkeiten sind bereits installiert ({target}).")
@@ -96,13 +126,30 @@ def install(extras: list[str], force: bool) -> None:
 
     print(f"Installiere Abhängigkeiten aus pyproject.toml ({target}) ...")
     python = str(venv_python())
-    for command in (
-        [python, "-m", "pip", "install", "--upgrade", "pip"],
-        [python, "-m", "pip", "install", target],
-    ):
+    commands = [[python, "-m", "pip", "install", "--upgrade", "pip"]]
+    if torch:
+        print(f"PyTorch-Variante für dieses System: {torch}")
+        commands.append([python, "-m", "pip", "install", "torch", "--index-url", TORCH_INDEX + torch])
+    commands.append([python, "-m", "pip", "install", target])
+    for command in commands:
         if subprocess.run(command, cwd=ROOT).returncode != 0:
             fail("Installation fehlgeschlagen, siehe Ausgabe oben.")
     STAMP.write_text(stamp + "\n")
+
+
+def run_in_venv(code: str) -> int:
+    """Führt Python-Code mit der .venv und src/ im Pfad aus."""
+    setup = "import sys; sys.path.insert(0, 'src'); "
+    return subprocess.run([str(venv_python()), "-c", setup + code], cwd=ROOT).returncode
+
+
+def setup_image_model() -> None:
+    run_in_venv(
+        "import torch; print('PyTorch', torch.__version__, '| GPU:', torch.cuda.get_device_name(0) "
+        "if torch.cuda.is_available() else 'keine, Bilder entstehen auf der CPU (sehr langsam)')"
+    )
+    if run_in_venv("from Agents.image_backend import download_flux_model; download_flux_model()") != 0:
+        fail("Download des FLUX-Modells fehlgeschlagen. Erneut ausführen setzt den Download fort.")
 
 
 def main() -> None:
@@ -112,7 +159,7 @@ def main() -> None:
     if "-h" in args or "--help" in args:
         print(__doc__)
         return
-    unknown = [a for a in args if a not in ("--dev", "--image", "--force")]
+    unknown = [a for a in args if a not in ("--dev", "--no-image", "--force")]
     if unknown:
         fail(f"Unbekannte Option: {' '.join(unknown)} (siehe --help)")
 
@@ -126,9 +173,12 @@ def main() -> None:
         )
 
     force = "--force" in args
-    extras = [name for name in ("dev", "image") if f"--{name}" in args]
+    image = "--no-image" not in args
+    extras = ["dev"] * ("--dev" in args) + ["image"] * image
     ensure_venv(force)
     install(extras, force)
+    if image:
+        setup_image_model()
 
     activate = r".venv\Scripts\activate" if WINDOWS else "source .venv/bin/activate"
     print(f"\nFertig. Umgebung aktivieren mit:\n  {activate}\nDanach starten mit: python main.py")

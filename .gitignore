@@ -1,20 +1,23 @@
-# Python virtual environments
-myenv/
+# Python: virtuelle Umgebungen, Caches, Tests
 .venv/
 venv/
-
-# Project folders
-Dateien/
-AIbilder/
-memory/
-
-# Temporary and cache files
+myenv/
 __pycache__/
 *.py[cod]
 *$py.class
 .pytest_cache/
 *.egg-info/
 build/
+
+# Lokale Modelle (FLUX, lädt der Installer)
+models/
+
+# Project folders
+Dateien/
+AIbilder/
+memory/
+
+# Temporary files
 *.log
 *.tmp
 *.temp
@@ -46,7 +49,6 @@ doks.txt
 
 # Agent-Workspace (Uploads, erzeugte Bilder, Agent-Dateien)
 workspace/
-.venv/
 # Chainlit Laufzeitdaten
 src/ui/.files/
 src/ui/chainlit.md

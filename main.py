@@ -6,11 +6,36 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 SRC = ROOT / "src"
+VENV = ROOT / ".venv"
+
+
+def use_project_venv() -> None:
+    """Startet main.py mit dem Python aus .venv neu, falls es mit einem anderen Python aufgerufen wurde."""
+    python = VENV / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    if not python.exists() or Path(sys.prefix).resolve() == VENV.resolve():
+        return
+    args = [str(python), str(Path(__file__).resolve()), *sys.argv[1:]]
+    if os.name == "nt":
+        # os.execv ersetzt unter Windows den Prozess nicht sauber.
+        import subprocess
+
+        sys.exit(subprocess.call(args))
+    os.execv(args[0], args)
+
+
+use_project_venv()
+
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from rag_chatpipline.api_server import app as rag_app
-from Agents.chat_agent import chat
+try:
+    from rag_chatpipline.api_server import app as rag_app
+    from Agents.chat_agent import chat
+except ModuleNotFoundError as exc:
+    raise SystemExit(
+        f"Paket fehlt: {exc.name}. Bitte zuerst die Projekt-Umgebung einrichten: "
+        "./install.sh (Windows: install.bat)"
+    ) from exc
 
 
 def run_backend(host: str = "0.0.0.0", port: int = 8000) -> None:

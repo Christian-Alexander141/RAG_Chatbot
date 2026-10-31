@@ -3,14 +3,18 @@
 - Linke Seitenleiste: alte Chats (Chainlit-Historie, gespeichert in SQLite)
 - Rechte Seitenleiste "Wissensquellen": Dokumente hochladen, ansehen und entfernen
 - Antworten werden gestreamt, die Arbeitsschritte des Agenten erscheinen als Schritte
+- Benutzermenü > Einstellungen: Sprach- und Bildmodelle für Chat und Agenten wählen (pro Nutzer gespeichert)
 """
 from pathlib import Path
 from typing import Optional
 
 import chainlit as cl
+from chainlit.input_widget import Select
 from chainlit.types import ThreadDict
 
+import user_settings
 from Agents.chat_agent import chat_stream, seed_history
+from Agents.models import ModelChoice, image_models, language_models
 from history_db import create_data_layer
 from rag_chatpipline import knowledge_base
 
@@ -18,8 +22,16 @@ HELP = (
     "Ich beantworte Fragen zu euren Dokumenten, arbeite mit Dateien im Workspace und erzeuge Bilder.\n\n"
     "- **Dokumente** verwaltest du in der Seitenleiste *Wissensquellen* (rechts). Du kannst auch eine Datei "
     "an eine Nachricht anhängen.\n"
-    "- **Alte Chats** findest du in der linken Seitenleiste."
+    "- **Alte Chats** findest du in der linken Seitenleiste.\n"
+    "- **Modelle** wählst du im Benutzermenü (oben rechts) unter *Einstellungen*."
 )
+
+SETTINGS_LABELS = {
+    "chat": ("Chat-Modell", "Formuliert die Antworten an dich."),
+    "agent": ("Werkzeug-Agent", "Durchsucht Dokumente und arbeitet mit Dateien. Nur Modelle mit Tool-Calling."),
+    "image_prompt": ("Bild-Agent", "Schreibt aus deinem Bildwunsch den Prompt für das Bildmodell."),
+    "image": ("Bildmodell", "Erzeugt die Bilder. Weitere Modelle legt man unter models/ ab."),
+}
 
 TOOL_LABELS = {
     "search_documents": "Dokumente durchsuchen",
@@ -49,8 +61,36 @@ async def _open_documents_panel() -> None:
     await cl.ElementSidebar.set_elements([cl.CustomElement(name="DocumentsPanel", props={})])
 
 
+def _user_id() -> str:
+    user = cl.user_session.get("user")
+    return user.identifier if user else "lokal"
+
+
+async def _send_settings() -> None:
+    """Zeigt die Modellwahl an (Dialog "Einstellungen") und merkt sich die Wahl für diese Sitzung."""
+    llms = await cl.make_async(language_models)()
+    available = {"chat": llms["chat"], "agent": llms["tools"], "image_prompt": llms["chat"], "image": image_models()}
+    choice = user_settings.resolve(user_settings.load(_user_id()), available)
+    cl.user_session.set("models", choice)
+    widgets = []
+    for key, (label, description) in SETTINGS_LABELS.items():
+        current = getattr(choice, key)
+        values = available[key] or [current]  # ohne Ollama bzw. ohne heruntergeladenes Modell: nur die aktuelle Wahl
+        widgets.append(Select(id=key, label=label, values=values, initial_value=current, description=description))
+    await cl.ChatSettings(widgets).send()
+
+
+@cl.on_settings_update
+async def settings_update(settings: dict) -> None:
+    current = cl.user_session.get("models") or ModelChoice.defaults()
+    choice = ModelChoice(**{key: settings.get(key) or getattr(current, key) for key in SETTINGS_LABELS})
+    cl.user_session.set("models", choice)
+    await cl.make_async(user_settings.save)(_user_id(), choice)
+
+
 @cl.on_chat_start
 async def start() -> None:
+    await _send_settings()
     await _open_documents_panel()
     await cl.Message(HELP, actions=[cl.Action(name="open_documents", payload={}, label="Wissensquellen öffnen")]).send()
 
@@ -68,7 +108,9 @@ async def resume(thread: ThreadDict) -> None:
         for step in thread.get("steps", [])
         if step.get("type") in ("user_message", "assistant_message")
     ]
-    await cl.make_async(seed_history)(thread["id"], exchanges)
+    await _send_settings()
+    models = cl.user_session.get("models")
+    await cl.make_async(seed_history)(thread["id"], exchanges, None, models.agent)
     await _open_documents_panel()
 
 
@@ -95,7 +137,7 @@ async def on_message(message: cl.Message) -> None:
     current: Optional[cl.Step] = None
     result: Optional[dict] = None
 
-    events = chat_stream(text, cl.context.session.thread_id)
+    events = chat_stream(text, cl.context.session.thread_id, models=cl.user_session.get("models"))
     done = object()
     try:
         while (event := await cl.make_async(next)(events, done)) is not done:
@@ -108,6 +150,9 @@ async def on_message(message: cl.Message) -> None:
                 await current.update()
             elif kind == "agent_start":
                 current = cl.Step(name="Agent arbeitet", type="run")
+                await current.send()
+            elif kind == "image_agent_start":
+                current = cl.Step(name="Bild-Agent arbeitet", type="run")
                 await current.send()
             elif kind == "tool_start":
                 step = cl.Step(name=TOOL_LABELS.get(event["name"], event["name"]), type="tool", parent_id=current.id)

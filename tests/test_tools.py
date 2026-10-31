@@ -1,4 +1,11 @@
+from langchain.tools import ToolRuntime
+
 from Agents import tools
+
+
+def image_call(prompt: str, context=None) -> dict:
+    runtime = ToolRuntime(state={}, context=context, config={}, stream_writer=None, tool_call_id="1", store=None)
+    return {"type": "tool_call", "name": "generate_image", "args": {"prompt": prompt, "runtime": runtime}, "id": "1"}
 
 
 def test_filesystem_tools_roundtrip(workspace):
@@ -34,9 +41,7 @@ def test_generate_image_mock_returns_artifact(workspace, monkeypatch):
     from rag_chatpipline import config
 
     monkeypatch.setattr(config, "IMAGE_BACKEND", "mock")
-    result = tools.generate_image.invoke(
-        {"type": "tool_call", "name": "generate_image", "args": {"prompt": "a cat"}, "id": "1"}
-    )
+    result = tools.generate_image.invoke(image_call("a cat"))
     assert (config.IMAGES_DIR / result.artifact["name"]).read_bytes().startswith(b"\x89PNG")
 
 
@@ -44,7 +49,5 @@ def test_generate_image_reports_errors_to_the_agent(workspace, monkeypatch):
     from rag_chatpipline import config
 
     monkeypatch.setattr(config, "IMAGE_BACKEND", "gibtsnicht")
-    result = tools.generate_image.invoke(
-        {"type": "tool_call", "name": "generate_image", "args": {"prompt": "a cat"}, "id": "1"}
-    )
+    result = tools.generate_image.invoke(image_call("a cat"))
     assert "fehlgeschlagen" in result.content and result.artifact == {}

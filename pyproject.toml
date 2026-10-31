@@ -32,14 +32,13 @@ dev = [
     "pytest",
     "httpx",
 ]
-# Optional: lokale Bildgenerierung mit FLUX (braucht eine GPU mit ausreichend VRAM/RAM)
+# Lokale Bildgenerierung mit FLUX.2 [klein] 4B. Der Installer wählt die passende PyTorch-Variante (CUDA/CPU).
 image = [
     "torch",
     "diffusers",
     "transformers",
     "accelerate",
-    "sentencepiece",
-    "protobuf",
+    "huggingface_hub",
 ]
 
 [tool.setuptools]

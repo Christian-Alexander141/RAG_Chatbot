@@ -12,7 +12,7 @@ from rag_chatpipline import api_server, config
 @pytest.fixture(autouse=True)
 def no_real_chat_model(monkeypatch):
     """Tests laden nie echte Ollama-Modelle; ohne Chat-Modell antwortet der Agent direkt."""
-    monkeypatch.setattr(chat_agent, "_chat_model", False)
+    monkeypatch.setattr(chat_agent, "get_chat_model", lambda *args: None)
 
 
 class ScriptedModel(FakeMessagesListChatModel):
@@ -47,7 +47,8 @@ def test_agent_runs_tool_and_collects_images_per_turn(workspace, vector_store, m
 
 def test_api_chat_and_documents(workspace, vector_store, monkeypatch):
     monkeypatch.setattr(config, "IMAGE_BACKEND", "mock")
-    monkeypatch.setattr(chat_agent, "_agent", scripted_agent())
+    agent = scripted_agent()
+    monkeypatch.setattr(chat_agent, "get_agent", lambda *args: agent)
     monkeypatch.setattr(api_server.knowledge_base, "_vector_store", vector_store)
     client = TestClient(api_server.app)
 

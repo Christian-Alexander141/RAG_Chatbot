@@ -3,12 +3,14 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import Any
 
+from langchain.tools import ToolRuntime
 from langchain_core.tools import tool
 
 from rag_chatpipline import config, knowledge_base
 
-from . import image_backend
+from . import image_agent
 
 logger = logging.getLogger(__name__)
 
@@ -146,20 +148,18 @@ def search_files(pattern: str) -> str:
 
 # === Bildgenerierung ===
 @tool(response_format="content_and_artifact")
-def generate_image(prompt: str) -> tuple[str, dict]:
+def generate_image(prompt: str, runtime: ToolRuntime[Any]) -> tuple[str, dict]:
     """Erzeugt ein Bild mit FLUX und zeigt es dem Nutzer im Chat an. Nutze dieses Tool, wenn der
-    Nutzer ein Bild, eine Illustration oder Grafik möchte. Der Prompt sollte auf Englisch und
-    möglichst detailliert sein (Motiv, Stil, Licht, Stimmung).
+    Nutzer ein Bild, eine Illustration oder Grafik möchte.
 
     Args:
-        prompt: Englische Bildbeschreibung.
+        prompt: Beschreibung des gewünschten Bildes.
     """
-    logger.info("generate_image: %s", prompt)
-    try:
-        path = image_backend.generate_image(prompt)
-    except Exception as exc:
-        return f"Bildgenerierung fehlgeschlagen: {exc}", {}
-    return "Das Bild wurde erzeugt und wird dem Nutzer angezeigt.", {"name": path.name, "prompt": prompt}
+    # Der Bild-Agent formuliert den eigentlichen FLUX-Prompt, mit den Modellen, die der Nutzer gewählt hat.
+    models = getattr(runtime.context, "models", None)
+    if models is None:
+        return image_agent.generate(image_agent.write_prompt(prompt))
+    return image_agent.generate(image_agent.write_prompt(prompt, model_name=models.image_prompt), models.image)
 
 
 TOOLS = [search_documents, list_files, read_file, write_file, make_directory, search_files, generate_image]

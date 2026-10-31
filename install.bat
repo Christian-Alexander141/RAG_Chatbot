@@ -1,6 +1,6 @@
 @echo off
 rem Starter fuer Windows. Die eigentliche Arbeit macht install.py.
-rem Aufruf: install.bat [--dev] [--image] [--force]
+rem Aufruf: install.bat [--dev] [--no-image] [--force]
 setlocal
 cd /d "%~dp0"
 

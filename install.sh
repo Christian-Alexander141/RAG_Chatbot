@@ -1,6 +1,6 @@
 #!/usr/bin/env sh
 # Starter für Linux, WSL und macOS. Die eigentliche Arbeit macht install.py.
-# Aufruf: ./install.sh [--dev] [--image] [--force]
+# Aufruf: ./install.sh [--dev] [--no-image] [--force]
 set -e
 cd "$(dirname "$0")"
 
