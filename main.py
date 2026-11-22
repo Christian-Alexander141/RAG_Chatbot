@@ -137,14 +137,23 @@ def run_all(host: str = "0.0.0.0", port: int = 8000) -> None:
 
 def run_cli() -> None:
     parser = argparse.ArgumentParser(description="Zentraler Einstiegspunkt für die RAG-Chatbot-App")
-    parser.add_argument("--mode", choices=["backend", "frontend", "all", "chat", "networks"], default="backend")
+    parser.add_argument("--mode", choices=["backend", "frontend", "all", "chat", "networks", "transcribe"], default="backend")
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--message", default="Hallo")
     parser.add_argument("--chat-id", default=None)
     parser.add_argument("--network", default=None, help="mit --mode networks: dieses eigene Netz direkt aufrufen")
     parser.add_argument("--args", default="{}", help='mit --network: Argumente als JSON, z. B. \'{"bild": "Uploads/7.png"}\'')
+    parser.add_argument("--file", default=None, help="mit --mode transcribe: Audiodatei, die in Text umgewandelt wird")
     args = parser.parse_args()
+
+    if args.mode == "transcribe":
+        from Agents import speech
+
+        if not args.file:
+            parser.error("--mode transcribe braucht --file AUDIODATEI")
+        print(speech.transcribe_file(Path(args.file)) or "(keine Sprache erkannt)")
+        return
 
     if args.mode == "networks":
         from Agents import neural_networks

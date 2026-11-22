@@ -54,6 +54,19 @@ VIDEO_FPS = int(os.getenv("VIDEO_FPS", "24"))
 VIDEO_STEPS = int(os.getenv("VIDEO_STEPS", "16"))  # die distill-Fassung ist auf 16 Schritte ausgelegt
 VIDEO_GUIDANCE = float(os.getenv("VIDEO_GUIDANCE", "1.0"))  # distill-Fassung: 1.0, andere Modelle meist 5.0
 
+# Spracheingabe (Speech-to-Text): Whisper lokal über transformers
+SPEECH_MODEL = os.getenv("SPEECH_MODEL", "openai/whisper-large-v3-turbo")
+SPEECH_MODELS_DIR = MODELS_DIR / "speech"
+SPEECH_MODEL_DIR = SPEECH_MODELS_DIR / SPEECH_MODEL.split("/")[-1]
+# Sprache der Aufnahmen, z. B. "de" oder "en". Leer = automatisch erkennen (bei kurzen Sätzen unzuverlässiger).
+SPEECH_LANGUAGE = os.getenv("SPEECH_LANGUAGE", "de")
+# "auto" (GPU, wenn genug Grafikspeicher frei ist, sonst CPU), "cuda" oder "cpu"
+SPEECH_DEVICE = os.getenv("SPEECH_DEVICE", "auto")
+# Sekunden, die das Modell nach der letzten Aufnahme geladen bleibt (0 = sofort freigeben)
+SPEECH_KEEP_ALIVE = int(os.getenv("SPEECH_KEEP_ALIVE", "300"))
+# Längere Aufnahmen werden abgeschnitten
+SPEECH_MAX_SECONDS = int(os.getenv("SPEECH_MAX_SECONDS", "120"))
+
 # Eigene neuronale Netze (je Netz ein Unterordner mit network.py), siehe docs/eigene-netze.md
 NETWORKS_DIR = Path(os.getenv("NETWORKS_DIR", ROOT / "networks")).resolve()
 

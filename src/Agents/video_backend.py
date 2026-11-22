@@ -196,7 +196,7 @@ def generate_video(prompt: str, model: Optional[str] = None, image: Optional[Pat
     with image_backend._lock:  # immer nur ein Bild oder Video gleichzeitig, sonst geht der Speicher aus
         try:
             image_backend.release()  # FLUX belegt rund 16 GB Arbeitsspeicher
-            image_backend._free_vram_from_ollama()
+            image_backend.free_gpu()  # Ollama-Modelle und Spracherkennung aus dem Grafikspeicher
             if split:
                 call.update(_encode_prompt(model_dir, prompt, components, torch))
                 pipe = _load(model_dir, [c for c in components if c not in _TEXT_ENCODERS], list(_TEXT_ENCODERS), torch)

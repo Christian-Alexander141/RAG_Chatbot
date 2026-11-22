@@ -90,6 +90,14 @@ def _free_vram_from_ollama() -> None:
         logger.debug("Ollama-Modelle konnten nicht entladen werden", exc_info=True)
 
 
+def free_gpu() -> None:
+    """Macht vor einem Bild oder Video den Grafikspeicher frei: Ollama-Modelle und Spracherkennung entladen."""
+    from . import speech
+
+    speech.release()
+    _free_vram_from_ollama()
+
+
 def _free_memory() -> None:
     import torch
 
@@ -210,7 +218,7 @@ def generate_image(prompt: str, model: Optional[str] = None) -> Path:
     model_dir = _model_dir(model)
     try:
         with _lock:  # eine Generierung gleichzeitig, sonst geht der Speicher aus
-            _free_vram_from_ollama()
+            free_gpu()
             pipe = _load_pipeline(model_dir)
             image = pipe(
                 prompt=prompt,

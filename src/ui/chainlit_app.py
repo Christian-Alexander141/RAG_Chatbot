@@ -6,17 +6,22 @@
 - Benutzermenü > Einstellungen: Sprach-, Bild- und Videomodelle für Chat und Agenten wählen (pro Nutzer gespeichert)
 - Angehängte Dateien: Dokumente gehen in die Wissensbasis, alles andere (z. B. Bilder) nach workspace/Uploads/.
   Der Agent bekommt die Pfade mitgeteilt, damit eigene neuronale Netze oder der Video-Agent sie nutzen können.
+- Spracheingabe: Mikrofon-Knopf neben dem Eingabefeld. Die Aufnahme wird lokal mit Whisper in Text umgewandelt
+  und dann wie eine getippte Nachricht beantwortet.
 """
+import asyncio
 import shutil
 from pathlib import Path
 from typing import Optional
 
 import chainlit as cl
+from chainlit.config import config as chainlit_config
+from chainlit.data import get_data_layer
 from chainlit.input_widget import Select
-from chainlit.types import ThreadDict
+from chainlit.types import InputAudioChunk, ThreadDict
 
 import user_settings
-from Agents import neural_networks
+from Agents import neural_networks, speech
 from Agents.chat_agent import chat_stream, seed_history
 from Agents.models import ModelChoice, image_models, language_models, video_models
 from history_db import create_data_layer
@@ -28,6 +33,7 @@ HELP = (
     "an eine Nachricht anhängen. Ein Dokument direkt bekommst du z. B. mit *„Gib mir die Reisekostenrichtlinie“*.\n"
     "- **Videos** mit Ton: *„Erstelle ein Video von …“* oder nach einem Bild *„Animiere das Bild“*. "
     "Das dauert einige Minuten.\n"
+    "- **Spracheingabe:** Mikrofon-Knopf neben dem Eingabefeld drücken, sprechen, zum Beenden erneut drücken.\n"
     "- **Alte Chats** findest du in der linken Seitenleiste.\n"
     "- **Modelle** wählst du im Benutzermenü (oben rechts) unter *Einstellungen*."
 )
@@ -150,6 +156,7 @@ async def resume(thread: ThreadDict) -> None:
     await _send_settings()
     models = cl.user_session.get("models")
     await cl.make_async(seed_history)(thread["id"], exchanges, None, models.agent)
+    cl.user_session.set("thread_named", True)
     await _open_documents_panel()
 
 
@@ -196,7 +203,68 @@ async def on_message(message: cl.Message) -> None:
         return
     if attachments:  # So weiß der Agent, unter welchem Pfad er die Dateien an Tools übergeben kann.
         text += "\n\n[Angehängte Dateien im Workspace: " + ", ".join(f"`{p}`" for p in attachments) + "]"
+    cl.user_session.set("thread_named", True)  # Chainlit benennt den Chat nach der ersten getippten Nachricht
+    await _answer(text)
 
+
+# === Spracheingabe ===
+# Der Browser schickt die Aufnahme in kleinen Blöcken (16-Bit-PCM, mono, Abtastrate aus .chainlit/config.toml).
+MAX_AUDIO_SECONDS = 300  # Puffer-Obergrenze; erkannt werden höchstens SPEECH_MAX_SECONDS
+
+
+@cl.on_audio_start
+async def audio_start() -> bool:
+    """Mikrofon-Knopf gedrückt. True startet die Aufnahme im Browser."""
+    if not speech.is_installed():
+        await cl.Message("⚠️ Die Spracheingabe ist nicht eingerichtet: Das Spracherkennungsmodell fehlt. "
+                         "Installation mit `./install.sh` (Windows: `install.bat`).").send()
+        return False
+    cl.user_session.set("audio", bytearray())
+    return True
+
+
+@cl.on_audio_chunk
+async def audio_chunk(chunk: InputAudioChunk) -> None:
+    buffer = cl.user_session.get("audio")
+    if buffer is None:
+        return
+    if chunk.isStart:
+        buffer.clear()
+    if len(buffer) < MAX_AUDIO_SECONDS * chainlit_config.features.audio.sample_rate * 2:
+        buffer.extend(chunk.data)
+
+
+@cl.on_audio_end
+async def audio_end() -> None:
+    """Mikrofon-Knopf erneut gedrückt: Aufnahme in Text umwandeln und wie eine getippte Nachricht beantworten."""
+    try:
+        await asyncio.sleep(0.2)  # die letzten Audioblöcke werden parallel verarbeitet
+        buffer = cl.user_session.get("audio")
+        cl.user_session.set("audio", None)
+        if not buffer:
+            return
+        try:
+            text = await cl.make_async(speech.transcribe_pcm16)(bytes(buffer), chainlit_config.features.audio.sample_rate)
+        except Exception as exc:
+            await cl.Message(f"⚠️ Die Spracheingabe ist fehlgeschlagen: {exc}").send()
+            return
+        if not text:
+            await cl.Message("🎙️ Ich habe keine Sprache erkannt. Bitte noch einmal versuchen.").send()
+            return
+        # Erkannten Text als Nachricht des Nutzers anzeigen (wird mit dem Chat gespeichert)
+        await cl.Message(content=text, type="user_message", author=_user_id()).send()
+        if not cl.user_session.get("thread_named"):
+            # Chainlit nennt einen Chat, der per Sprache beginnt, nur "audio". Besser: der erkannte Text.
+            cl.user_session.set("thread_named", True)
+            if (layer := get_data_layer()) is not None:
+                await layer.update_thread(thread_id=cl.context.session.thread_id, name=text[:100])
+        await _answer(text)
+    finally:
+        await cl.context.emitter.task_end()
+
+
+async def _answer(text: str) -> None:
+    """Beantwortet eine Nachricht: Ereignisse des Agenten als Arbeitsschritte anzeigen, Antwort streamen."""
     answer = cl.Message(content="")
     steps: dict[str, cl.Step] = {}
     current: Optional[cl.Step] = None

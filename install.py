@@ -1,12 +1,15 @@
 """Richtet die virtuelle Umgebung .venv ein, installiert die Abhängigkeiten aus pyproject.toml
-und lädt einmalig das Bildmodell FLUX.2 [klein] 4B nach models/ (mit --video auch das Videomodell).
+und lädt einmalig das Bildmodell FLUX.2 [klein] 4B und das Spracherkennungsmodell Whisper large-v3-turbo
+nach models/ (mit --video auch das Videomodell).
 
 Läuft unter Linux, WSL, macOS und Windows. Bereits erledigte Schritte werden übersprungen.
 Erneut installiert wird nur, wenn sich pyproject.toml oder die gewählten Extras geändert haben.
 
-Aufruf: python install.py [--dev] [--no-image] [--video] [--force]
+Aufruf: python install.py [--dev] [--no-image] [--no-speech] [--video] [--force]
   --dev        Test-Pakete (pytest, httpx)
-  --no-image   ohne Bildgenerierung (spart PyTorch und etwa 16 GB Modelldownload)
+  --no-image   ohne Bildgenerierung (spart PyTorch und etwa 16 GB Modelldownload; ohne PyTorch
+               gibt es auch keine Spracheingabe)
+  --no-speech  ohne Spracheingabe (spart etwa 1,6 GB Modelldownload)
   --video      zusätzlich das Videomodell Kandinsky 6.0 Video Lite laden (etwa 27 GB)
   --force      .venv neu anlegen und alles neu installieren
 """
@@ -153,6 +156,11 @@ def setup_image_model() -> None:
         fail("Download des FLUX-Modells fehlgeschlagen. Erneut ausführen setzt den Download fort.")
 
 
+def setup_speech_model() -> None:
+    if run_in_venv("from Agents.speech import download_speech_model; download_speech_model()") != 0:
+        fail("Download des Spracherkennungsmodells fehlgeschlagen. Erneut ausführen setzt den Download fort.")
+
+
 def setup_video_model() -> None:
     if run_in_venv("from Agents.video_backend import download_video_model; download_video_model()") != 0:
         fail("Download des Videomodells fehlgeschlagen. Erneut ausführen setzt den Download fort.")
@@ -165,7 +173,7 @@ def main() -> None:
     if "-h" in args or "--help" in args:
         print(__doc__)
         return
-    unknown = [a for a in args if a not in ("--dev", "--no-image", "--video", "--force")]
+    unknown = [a for a in args if a not in ("--dev", "--no-image", "--no-speech", "--video", "--force")]
     if unknown:
         fail(f"Unbekannte Option: {' '.join(unknown)} (siehe --help)")
 
@@ -188,6 +196,8 @@ def main() -> None:
     install(extras, force)
     if image:
         setup_image_model()
+    if image and "--no-speech" not in args:  # Whisper braucht PyTorch aus dem Extra "image"
+        setup_speech_model()
     if video:
         setup_video_model()
 

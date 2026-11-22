@@ -11,6 +11,7 @@ Prototyp eines firmeninternen Chatbots, der lokal laufende Sprachmodelle über *
 - **Eigene neuronale Netze** (z. B. CNN zur Handschrifterkennung, LSTM zur Kursprognose) als Tools des Werkzeug-Agenten: Ordner unter `networks/` anlegen, fertig. Anleitung: [docs/eigene-netze.md](docs/eigene-netze.md)
 - **Bild-Agent** mit FLUX.2 [klein] 4B: „Erstelle ein Bild von …“ erzeugt lokal ein Bild und zeigt es im Chat
 - **Video-Agent** mit Kandinsky 6.0 Video Lite: „Erstelle ein Video von …“ oder „Animiere das Bild“ erzeugt lokal ein kurzes Video mit Ton
+- **Spracheingabe** mit Whisper large-v3-turbo: Frage über den Mikrofon-Knopf sprechen, die Erkennung läuft lokal
 - **Einstellungen pro Nutzer:** Sprach-, Bild- und Videomodelle für Chat und Agenten im Benutzermenü wählen
 - **Oberfläche** mit [Chainlit](https://github.com/Chainlit/chainlit), eingebunden in einen FastAPI-Server, mit Chat-Historie und Vorlesefunktion
 - **Installer** für Linux, WSL, macOS und Windows
@@ -22,6 +23,7 @@ Prototyp eines firmeninternen Chatbots, der lokal laufende Sprachmodelle über *
 - **Für Bilder:** etwa 23 GB freier Arbeitsspeicher beim Laden des Modells (32 GB RAM im Rechner empfohlen), eine NVIDIA-GPU mit 8 GB Grafikspeicher oder mehr (empfohlen) und etwa 20 GB freier Speicherplatz (16 GB Modell, dazu PyTorch). Ohne GPU läuft FLUX auf der CPU, aber sehr langsam.
 - **Für Videos (optional):** etwa 30 GB freier Speicherplatz für das Modell und etwa 25 GB freier Arbeitsspeicher beim Laden (48 GB RAM im Rechner empfohlen), eine NVIDIA-GPU. Siehe [Videogenerierung](#videogenerierung).
 - **Für die Beispielnetze** unter `networks/`: PyTorch und Pillow, beides bringt die Standardinstallation mit.
+- **Für die Spracheingabe:** PyTorch (Standardinstallation), etwa 1,6 GB Speicherplatz für das Modell und ein Mikrofon. Eine GPU ist nicht nötig, macht die Erkennung aber deutlich schneller.
 
 ## Installation
 
@@ -38,7 +40,8 @@ Beide Starter rufen `install.py` auf. Das geht auch direkt: `python install.py -
 | Option | Wirkung |
 |---|---|
 | `--dev` | zusätzlich die Test-Pakete (pytest, httpx) |
-| `--no-image` | ohne Bildgenerierung: kein PyTorch, kein FLUX-Download |
+| `--no-image` | ohne Bildgenerierung: kein PyTorch, kein FLUX-Download (damit auch keine Spracheingabe) |
+| `--no-speech` | ohne Spracheingabe: kein Download des Spracherkennungsmodells |
 | `--video` | zusätzlich das Videomodell Kandinsky 6.0 Video Lite laden (etwa 27 GB) |
 | `--force` | `.venv` neu anlegen und alles neu installieren |
 
@@ -48,7 +51,8 @@ Der Installer erledigt nacheinander:
 2. **PyTorch** in der passenden Variante installieren (siehe [Bildgenerierung](#bildgenerierung)).
 3. **Abhängigkeiten** aus `pyproject.toml` installieren.
 4. **FLUX.2 [klein] 4B** einmalig nach `models/FLUX.2-klein-4B/` laden (etwa 16 GB). Ein abgebrochener Download wird beim nächsten Aufruf fortgesetzt.
-5. Nur mit `--video`: **Kandinsky 6.0 Video Lite** einmalig nach `models/video/Kandinsky-6.0-Lite-distill-5s-Diffusers/` laden (etwa 27 GB), ebenfalls fortsetzbar.
+5. **Whisper large-v3-turbo** einmalig nach `models/speech/whisper-large-v3-turbo/` laden (etwa 1,6 GB), außer mit `--no-speech`.
+6. Nur mit `--video`: **Kandinsky 6.0 Video Lite** einmalig nach `models/video/Kandinsky-6.0-Lite-distill-5s-Diffusers/` laden (etwa 27 GB), ebenfalls fortsetzbar.
 
 Bereits erledigte Schritte werden übersprungen. Neu installiert wird nur, wenn sich `pyproject.toml` oder die Optionen geändert haben. Den Installer kann man also gefahrlos mehrfach aufrufen.
 
@@ -76,7 +80,7 @@ Die Oberfläche läuft auf http://localhost:8000 (leitet nach `/ui`), die API-Do
 
 `main.py` nutzt automatisch das Python aus `.venv`, auch wenn es mit einem anderen Python gestartet wird (z. B. über den Run-Button der IDE). Ein vorheriges `source .venv/bin/activate` (Windows: `.venv\Scripts\activate`) ist nur für andere Befehle wie `pytest` nötig.
 
-Weitere Modi: `python main.py --mode chat --message "Hallo"` (eine Frage im Terminal), `--mode networks` (eigene neuronale Netze prüfen, siehe [docs/eigene-netze.md](docs/eigene-netze.md)), `--mode frontend` bzw. `--mode all` (separates Node-Frontend unter `app/ai-chatbot`, falls vorhanden). Host und Port mit `--host` und `--port`.
+Weitere Modi: `python main.py --mode chat --message "Hallo"` (eine Frage im Terminal), `--mode networks` (eigene neuronale Netze prüfen, siehe [docs/eigene-netze.md](docs/eigene-netze.md)), `--mode transcribe --file aufnahme.wav` (Audiodatei in Text umwandeln), `--mode frontend` bzw. `--mode all` (separates Node-Frontend unter `app/ai-chatbot`, falls vorhanden). Host und Port mit `--host` und `--port`.
 
 ## So arbeitet der Chatbot
 
@@ -136,6 +140,7 @@ Die ausführliche Anleitung mit Vorlage, Referenz, Beispielen und Fehlerbehebung
 - **Wissensquellen** (rechte Seitenleiste): Dokumente hochladen, per Klick auf den Namen öffnen und entfernen. Alternativ eine Datei an eine Nachricht anhängen.
 - **Angehängte Bilder** und andere Dateien, die keine Dokumente sind, landen in `workspace/Uploads/`. Der Agent erfährt ihren Pfad und kann sie an eigene neuronale Netze oder den Video-Agenten geben („Welche Ziffer steht auf dem Bild?“, „Mach daraus ein Video“).
 - **Videos** erscheinen mit Player unter der Antwort, dazu ein Link *Video öffnen*. In wieder geöffneten alten Chats bleibt nur der Link.
+- **Spracheingabe:** Mikrofon-Knopf neben dem Eingabefeld drücken, sprechen, zum Beenden erneut drücken. Der erkannte Text erscheint als deine Nachricht und wird beantwortet wie eine getippte. Siehe [Spracheingabe](#spracheingabe).
 - **Dokumente direkt:** „Gib mir die Reisekostenrichtlinie“ antwortet sofort mit einem Link zum Dokument.
 - **Alte Chats** (linke Seitenleiste): Chats werden in `memory/chainlit.db` gespeichert und lassen sich wieder öffnen. Der Gesprächsverlauf wird dabei für das Modell wiederhergestellt, auch nach einem Neustart.
 - **Vorlesen:** Button an jeder neuen Antwort (nicht in wieder geöffneten alten Chats).
@@ -209,6 +214,18 @@ Standardmodell ist **[Kandinsky 6.0 Video Lite](https://huggingface.co/kandinsky
 
 Erzeugte Videos liegen in `workspace/AIvideos/` und sind über `/videos/{name}` abrufbar. Ohne passende Hardware: `VIDEO_BACKEND=mock` (graues Platzhaltervideo).
 
+## Spracheingabe
+
+Gesprochene Fragen wandelt **[Whisper large-v3-turbo](https://huggingface.co/openai/whisper-large-v3-turbo)** von OpenAI (MIT-Lizenz, 99 Sprachen) in Text um. Es läuft lokal über `transformers`, die Aufnahme verlässt den Rechner nicht. Whisper gilt als sichere Wahl für Deutsch auf normaler Hardware.
+
+- **Ablauf:** Der Mikrofon-Knopf von Chainlit nimmt im Browser auf und schickt die Aufnahme in kleinen Blöcken (16 kHz, mono) über die bestehende Verbindung an den Server. Nach dem Stopp erkennt Whisper den Text. Er erscheint als Nachricht des Nutzers und läuft dann durch den normalen Ablauf: Dokumentsuche, Werkzeug-Agent, Bild- und Video-Agent. Beginnt ein Chat per Sprache, wird er in der Seitenleiste nach dem erkannten Text benannt.
+- **Stille und Rauschen:** Vor der Erkennung prüft die App, ob die Aufnahme überhaupt Sprache enthält (Wechsel zwischen lauten Silben und leisen Pausen). Ohne diese Prüfung macht Whisper aus Rauschen gern Sätze wie „Amen.“ oder „Untertitel im Auftrag des ZDF“. Solche typischen Phantomsätze werden zusätzlich herausgefiltert.
+- **GPU oder CPU:** Ist genug Grafikspeicher frei, rechnet Whisper auf der GPU, sonst auf der CPU (`SPEECH_DEVICE`). Gemessen auf einer GTX 1080 Ti: 15 Sekunden Sprache in gut 1 Sekunde, auf der CPU etwa in Echtzeit. Beim ersten Mal kommen einige Sekunden fürs Laden dazu. Nach 5 Minuten ohne Aufnahme wird das Modell freigegeben (`SPEECH_KEEP_ALIVE`), vor jedem Bild oder Video ebenfalls.
+- **Sprache:** Standard ist Deutsch (`SPEECH_LANGUAGE=de`). Leer gesetzt erkennt Whisper die Sprache selbst, bei kurzen Sätzen aber weniger zuverlässig.
+- **Länge:** Erkannt werden höchstens 2 Minuten am Stück (`SPEECH_MAX_SECONDS`).
+- **Ohne Oberfläche:** `python main.py --mode transcribe --file aufnahme.wav` wandelt eine Audiodatei um (WAV, MP3, OGG, M4A, WebM, …). Für andere Programme gibt es `POST /transcribe`.
+- **Mikrofon im Browser:** Browser geben das Mikrofon nur frei, wenn die Seite auf demselben Rechner aufgerufen wird oder über HTTPS kommt. Die Nutzung von anderen Geräten aus ist noch nicht eingerichtet.
+
 ## Konfiguration (Umgebungsvariablen)
 
 | Variable | Standard | Bedeutung |
@@ -232,6 +249,11 @@ Erzeugte Videos liegen in `workspace/AIvideos/` und sind über `/videos/{name}` 
 | `VIDEO_FRAMES` | `49` | Bilder pro Video: 49 = 2 Sekunden, 121 = 5 Sekunden (Maximum) |
 | `VIDEO_FPS` | `24` | Bilder pro Sekunde |
 | `VIDEO_STEPS`, `VIDEO_GUIDANCE` | `16`, `1.0` | Schritte und Guidance; passend für die distill-Fassung |
+| `SPEECH_MODEL` | `openai/whisper-large-v3-turbo` | Spracherkennungsmodell, das der Installer von Hugging Face lädt (nach `models/speech/`) |
+| `SPEECH_LANGUAGE` | `de` | Sprache der Aufnahmen; leer = automatisch erkennen |
+| `SPEECH_DEVICE` | `auto` | `auto` (GPU, wenn genug Grafikspeicher frei ist), `cuda` oder `cpu` |
+| `SPEECH_KEEP_ALIVE` | `300` | Sekunden, die das Spracherkennungsmodell nach der letzten Aufnahme geladen bleibt |
+| `SPEECH_MAX_SECONDS` | `120` | Längere Aufnahmen werden abgeschnitten |
 | `NETWORKS_DIR` | `./networks` | Ordner mit den eigenen neuronalen Netzen |
 | `CORS_ORIGINS` | `http://localhost:3000` | Erlaubte Frontend-Origins, kommagetrennt |
 
@@ -242,6 +264,7 @@ Die Modelle sind Standardwerte. Jeder Nutzer kann Chat-, Agent-, Bild- und Video
 | Route | Zweck |
 |---|---|
 | `POST /chat` `{message, chatId?}` | Agent-Antwort `{text, chatId, images[], videos[]}` (`/rag` ist ein Alias) |
+| `POST /transcribe` (Datei im Feld `file`) | Spracheingabe: Audiodatei in Text umwandeln `{text}` |
 | `GET /documents`, `POST /documents`, `DELETE /documents/{name}` | Wissensbasis verwalten |
 | `GET /images/{name}` | erzeugte Bilder |
 | `GET /videos/{name}` | erzeugte Videos |
@@ -258,7 +281,7 @@ source .venv/bin/activate     # Windows: .venv\Scripts\activate
 pytest
 ```
 
-Die Tests brauchen weder Ollama noch eine GPU noch das FLUX- oder Videomodell: Modelle werden durch vorgegebene Antworten ersetzt, Bilder und Videos durch Platzhalter, eigene Netze durch kleine Testnetze. Das Laden des Videomodells in zwei Stufen prüft ein Test mit einer nachgebauten Pipeline.
+Die Tests brauchen weder Ollama noch eine GPU noch das FLUX-, Video- oder Spracherkennungsmodell: Modelle werden durch vorgegebene Antworten ersetzt, Bilder und Videos durch Platzhalter, eigene Netze durch kleine Testnetze. Das Laden des Videomodells in zwei Stufen prüft ein Test mit einer nachgebauten Pipeline.
 
 ## Daten und Ordner
 
@@ -267,7 +290,7 @@ Alles, was zur Laufzeit entsteht, steht in `.gitignore` und landet nicht im Repo
 | Ordner | Inhalt |
 |---|---|
 | `.venv/` | virtuelle Python-Umgebung (vom Installer) |
-| `models/` | Bildmodelle, unter `models/video/` die Videomodelle (vom Installer) |
+| `models/` | Bildmodelle, unter `models/video/` die Videomodelle, unter `models/speech/` das Spracherkennungsmodell (vom Installer) |
 | `memory/` | Chat-Historie (`chainlit.db`), Vektordatenbank (`qdrant/`, eine Sammlung je Embedding-Modell), Nutzereinstellungen (`user_settings.json`), Einstellungen für alle (`app_settings.json`) |
 | `workspace/` | hochgeladene Dokumente (`Dateien/`), angehängte Bilder und andere Dateien (`Uploads/`), erzeugte Bilder (`AIbilder/`) und Videos (`AIvideos/`), Dateien des Agenten |
 | `networks/*/daten/`, `networks/**/*.pt` | Trainingsdaten und Gewichte der eigenen Netze (entstehen mit `train.py`; der Code der Netze gehört ins Repository) |
@@ -284,6 +307,7 @@ Alles, was zur Laufzeit entsteht, steht in `.gitignore` und landet nicht im Repo
   - `image_backend.py`: FLUX über diffusers, Modelldownload, Platzhalter
   - `video_agent.py`: Video-Agent (Erkennen von Videowünschen, Startbild, Prompt schreiben, Video erzeugen)
   - `video_backend.py`: Videomodell über diffusers (zweistufiges Laden), Modelldownload, Platzhalter
+  - `speech.py`: Spracheingabe (Whisper laden, Audio vorbereiten, Stille erkennen, in Text umwandeln)
   - `neural_networks.py`: eigene neuronale Netze (Basisklasse `NeuralNetwork`, Einlesen aus `networks/`, Netz als Tool, `--mode networks`)
   - `tools.py`: Tools des Werkzeug-Agenten (Wissensbasis, Dateisystem, Bild, Video)
   - `models.py`: Modellwahl und Liste der lokalen Ollama-Modelle
@@ -311,6 +335,10 @@ Alles, was zur Laufzeit entsteht, steht in `.gitignore` und landet nicht im Repo
 | Bildgenerierung bricht mit zu wenig Grafikspeicher ab | `IMAGE_SIZE` verkleinern (z. B. `512`) oder andere GPU-Programme schließen. |
 | Menüpunkt *Einstellungen* fehlt | Erscheint erst in einem geöffneten Chat. Alternativ das Zahnrad neben dem Eingabefeld nutzen. |
 | „Das Ollama-Modell 'nomic-embed-text' ist nicht installiert“ | `ollama pull nomic-embed-text` oder in den Einstellungen ein installiertes Embedding-Modell wählen. |
+| Mikrofon-Knopf fehlt | `[features.audio] enabled` in `src/ui/.chainlit/config.toml` muss `true` sein. Danach den Chatbot neu starten und die Seite neu laden. |
+| Browser fragt nicht nach dem Mikrofon oder blockiert es | Der Browser erlaubt das Mikrofon nur auf demselben Rechner oder über HTTPS. Sonst in den Website-Einstellungen des Browsers das Mikrofon freigeben. |
+| „Die Spracheingabe ist nicht eingerichtet“ im Chat | Das Spracherkennungsmodell fehlt: `./install.sh` ausführen (nicht mit `--no-speech`). |
+| „Ich habe keine Sprache erkannt“ im Chat | Aufnahme zu leise, zu kurz oder nur Rauschen. Näher ans Mikrofon, Mikrofon im Betriebssystem prüfen. |
 | „Videomodell … fehlt“ im Chat | `./install.sh --video` ausführen, er setzt einen abgebrochenen Download fort. |
 | „Zu wenig freier Arbeitsspeicher für Kandinsky…“ im Chat | Der Textencoder braucht beim Laden etwa 25 GB freien Arbeitsspeicher. Andere Programme schließen; auf Rechnern mit 32 GB RAM wird es knapp. |
 | „Der Textencoder hat in float16 ungültige Werte geliefert“ | Die GPU kann kein bfloat16 (z. B. GTX 10xx) und das Modell rechnet in float16 nicht sauber. Anderes Videomodell wählen. |
@@ -325,7 +353,8 @@ Alles, was zur Laufzeit entsteht, steht in `.gitignore` und landet nicht im Repo
 - **Video-Agent:** Videos mit Ton aus Text oder aus einem Bild mit Kandinsky 6.0 Video Lite (MIT). Erkennung von Videowünschen, Tool `generate_video`, Auswahl des Videomodells in den Einstellungen, neue Installer-Option `--video`, neue Umgebungsvariablen `VIDEO_*`, neue Route `GET /videos/{name}`, `POST /chat` liefert `videos`.
 - **Anhänge:** Bilder lassen sich an Nachrichten anhängen. Dateien, die keine Dokumente sind, landen in `workspace/Uploads/`; der Agent erfährt ihren Pfad.
 - **Antworten:** Liefert das Agent-Modell nach einem Tool-Aufruf keinen Text (kleine Modelle), erscheint das Tool-Ergebnis.
-- **Abhängigkeiten:** Extra `image` enthält jetzt PyAV (Videos mit Ton speichern) und Pillow.
+- **Spracheingabe:** Mikrofon-Knopf in der Oberfläche, Erkennung lokal mit Whisper large-v3-turbo, Prüfung auf Stille und Rauschen, neuer Modus `python main.py --mode transcribe`, neue Route `POST /transcribe`, neue Installer-Option `--no-speech`, neue Umgebungsvariablen `SPEECH_*`.
+- **Abhängigkeiten:** Extra `image` enthält jetzt PyAV (Videos mit Ton speichern, Audiodateien lesen) und Pillow.
 
 **31.10.2026**
 
@@ -355,10 +384,10 @@ Lizenzen der Python-Pakete laut den installierten Paketen (Stand der Installatio
 | [pypdf](https://github.com/py-pdf/pypdf) | PDF-Text auslesen | BSD-3-Clause |
 | [python-docx](https://github.com/python-openxml/python-docx) | Word-Dokumente auslesen | MIT |
 | [SQLAlchemy](https://github.com/sqlalchemy/sqlalchemy) / [aiosqlite](https://github.com/omnilib/aiosqlite) | Speicher der Chat-Historie (SQLite) | MIT |
-| [Diffusers](https://github.com/huggingface/diffusers), [Transformers](https://github.com/huggingface/transformers), [Accelerate](https://github.com/huggingface/accelerate), [huggingface_hub](https://github.com/huggingface/huggingface_hub) | Bild- und Videogenerierung, Modelldownload | Apache-2.0 |
+| [Diffusers](https://github.com/huggingface/diffusers), [Transformers](https://github.com/huggingface/transformers), [Accelerate](https://github.com/huggingface/accelerate), [huggingface_hub](https://github.com/huggingface/huggingface_hub) | Bild- und Videogenerierung, Spracherkennung (Whisper), Modelldownload | Apache-2.0 |
 | [PyTorch](https://github.com/pytorch/pytorch) | Rechnen auf GPU/CPU für FLUX, das Videomodell und die Beispielnetze | BSD-3-Clause |
 | [PyAV](https://github.com/PyAV-Org/PyAV) | Videos mit Ton als MP4 speichern | BSD-3-Clause |
 | [Pillow](https://github.com/python-pillow/Pillow) | Bilder einlesen (Beispielnetze), Diagramme zeichnen | MIT-CMU |
 | [pytest](https://github.com/pytest-dev/pytest) / [HTTPX](https://github.com/encode/httpx) | Tests | MIT / BSD-3-Clause |
 
-**Modelle** haben eigene Lizenzen, die nicht zu den Paketen gehören. Bitte vor dem Firmeneinsatz prüfen: Teuken (Chat-Modell), Qwen3 (Agent-Modell), nomic-embed-text (Embeddings) und FLUX (Bildmodell; FLUX.2 [klein] 4B steht unter Apache-2.0, andere Varianten wie FLUX.2 [klein] 9B oder FLUX.1 [dev] haben andere Lizenzen) und Kandinsky 6.0 Video Lite (Videomodell, MIT). Das Beispielnetz zur Handschrifterkennung wird mit dem MNIST-Datensatz (Yann LeCun, Corinna Cortes, Christopher Burges) trainiert.
+**Modelle** haben eigene Lizenzen, die nicht zu den Paketen gehören. Bitte vor dem Firmeneinsatz prüfen: Teuken (Chat-Modell), Qwen3 (Agent-Modell), nomic-embed-text (Embeddings), FLUX (Bildmodell; FLUX.2 [klein] 4B steht unter Apache-2.0, andere Varianten wie FLUX.2 [klein] 9B oder FLUX.1 [dev] haben andere Lizenzen), Kandinsky 6.0 Video Lite (Videomodell, MIT) und Whisper large-v3-turbo (Spracherkennung, MIT). Das Beispielnetz zur Handschrifterkennung wird mit dem MNIST-Datensatz (Yann LeCun, Corinna Cortes, Christopher Burges) trainiert.

@@ -50,6 +50,10 @@ class ChatResponse(BaseModel):
     videos: list[str] = []  # URLs der in dieser Antwort erzeugten Videos
 
 
+class TranscriptionResponse(BaseModel):
+    text: str  # leer, wenn keine Sprache erkannt wurde
+
+
 class DocumentInfo(BaseModel):
     name: str
     chunks: int
@@ -75,6 +79,23 @@ def chat_endpoint(payload: ChatRequest) -> ChatResponse:
         images=[f"/images/{name}" for name in result["images"]],
         videos=[f"/videos/{name}" for name in result.get("videos", [])],
     )
+
+
+@app.post("/transcribe", response_model=TranscriptionResponse)
+def transcribe(file: UploadFile = File(...)) -> TranscriptionResponse:
+    """Spracheingabe: wandelt eine Audiodatei (WAV, MP3, OGG, WebM, ...) lokal mit Whisper in Text um."""
+    from Agents import speech
+
+    if not speech.is_installed():
+        raise HTTPException(status_code=503, detail="Das Spracherkennungsmodell fehlt. Installation mit ./install.sh")
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / (Path(file.filename or "").name or "aufnahme")
+        path.write_bytes(file.file.read())
+        try:
+            text = speech.transcribe_file(path)
+        except speech.SpeechError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return TranscriptionResponse(text=text)
 
 
 @app.get("/documents", response_model=list[DocumentInfo])
