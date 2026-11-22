@@ -47,6 +47,7 @@ class ChatResponse(BaseModel):
     text: str
     chatId: str
     images: list[str] = []  # URLs der in dieser Antwort erzeugten Bilder
+    videos: list[str] = []  # URLs der in dieser Antwort erzeugten Videos
 
 
 class DocumentInfo(BaseModel):
@@ -72,6 +73,7 @@ def chat_endpoint(payload: ChatRequest) -> ChatResponse:
         text=result["text"],
         chatId=result["chat_id"],
         images=[f"/images/{name}" for name in result["images"]],
+        videos=[f"/videos/{name}" for name in result.get("videos", [])],
     )
 
 
@@ -117,6 +119,7 @@ def document_file(name: str) -> FileResponse:
 
 
 app.mount("/images", StaticFiles(directory=config.IMAGES_DIR), name="images")
+app.mount("/videos", StaticFiles(directory=config.VIDEOS_DIR), name="videos")
 
 
 @app.get("/", include_in_schema=False)

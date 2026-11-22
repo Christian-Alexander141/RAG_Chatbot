@@ -3,8 +3,11 @@
 - Linke Seitenleiste: alte Chats (Chainlit-Historie, gespeichert in SQLite)
 - Rechte Seitenleiste "Wissensquellen": Dokumente hochladen, ansehen und entfernen
 - Antworten werden gestreamt, die Arbeitsschritte des Agenten erscheinen als Schritte
-- Benutzermenü > Einstellungen: Sprach- und Bildmodelle für Chat und Agenten wählen (pro Nutzer gespeichert)
+- Benutzermenü > Einstellungen: Sprach-, Bild- und Videomodelle für Chat und Agenten wählen (pro Nutzer gespeichert)
+- Angehängte Dateien: Dokumente gehen in die Wissensbasis, alles andere (z. B. Bilder) nach workspace/Uploads/.
+  Der Agent bekommt die Pfade mitgeteilt, damit eigene neuronale Netze oder der Video-Agent sie nutzen können.
 """
+import shutil
 from pathlib import Path
 from typing import Optional
 
@@ -13,15 +16,18 @@ from chainlit.input_widget import Select
 from chainlit.types import ThreadDict
 
 import user_settings
+from Agents import neural_networks
 from Agents.chat_agent import chat_stream, seed_history
-from Agents.models import ModelChoice, image_models, language_models
+from Agents.models import ModelChoice, image_models, language_models, video_models
 from history_db import create_data_layer
-from rag_chatpipline import knowledge_base
+from rag_chatpipline import config, knowledge_base
 
 HELP = (
-    "Ich beantworte Fragen zu euren Dokumenten, arbeite mit Dateien im Workspace und erzeuge Bilder.\n\n"
+    "Ich beantworte Fragen zu euren Dokumenten, arbeite mit Dateien im Workspace und erzeuge Bilder und Videos.\n\n"
     "- **Dokumente** verwaltest du in der Seitenleiste *Wissensquellen* (rechts). Du kannst auch eine Datei "
     "an eine Nachricht anhängen. Ein Dokument direkt bekommst du z. B. mit *„Gib mir die Reisekostenrichtlinie“*.\n"
+    "- **Videos** mit Ton: *„Erstelle ein Video von …“* oder nach einem Bild *„Animiere das Bild“*. "
+    "Das dauert einige Minuten.\n"
     "- **Alte Chats** findest du in der linken Seitenleiste.\n"
     "- **Modelle** wählst du im Benutzermenü (oben rechts) unter *Einstellungen*."
 )
@@ -29,8 +35,9 @@ HELP = (
 SETTINGS_LABELS = {
     "chat": ("Chat-Modell", "Formuliert die Antworten an dich."),
     "agent": ("Werkzeug-Agent", "Durchsucht Dokumente und arbeitet mit Dateien. Nur Modelle mit Tool-Calling."),
-    "image_prompt": ("Bild-Agent", "Schreibt aus deinem Bildwunsch den Prompt für das Bildmodell."),
+    "image_prompt": ("Bild- und Video-Agent", "Schreibt aus deinem Bild- oder Videowunsch den Prompt für das Modell."),
     "image": ("Bildmodell", "Erzeugt die Bilder. Weitere Modelle legt man unter models/ ab."),
+    "video": ("Videomodell", "Erzeugt die Videos mit Ton. Weitere Modelle legt man unter models/video/ ab."),
 }
 EMBEDDING_LABEL = (
     "Embedding-Modell (für alle Nutzer)",
@@ -45,6 +52,7 @@ TOOL_LABELS = {
     "make_directory": "Ordner anlegen",
     "search_files": "Dateien suchen",
     "generate_image": "Bild erzeugen",
+    "generate_video": "Video erzeugen",
     "find_document": "Dokument suchen",
 }
 
@@ -74,7 +82,8 @@ def _user_id() -> str:
 async def _send_settings() -> None:
     """Zeigt die Modellwahl an (Dialog "Einstellungen") und merkt sich die Wahl für diese Sitzung."""
     llms = await cl.make_async(language_models)()
-    available = {"chat": llms["chat"], "agent": llms["tools"], "image_prompt": llms["chat"], "image": image_models()}
+    available = {"chat": llms["chat"], "agent": llms["tools"], "image_prompt": llms["chat"], "image": image_models(),
+                 "video": video_models()}
     choice = user_settings.resolve(user_settings.load(_user_id()), available)
     cl.user_session.set("models", choice)
     widgets = []
@@ -117,7 +126,12 @@ async def settings_update(settings: dict) -> None:
 async def start() -> None:
     await _send_settings()
     await _open_documents_panel()
-    await cl.Message(HELP, actions=[cl.Action(name="open_documents", payload={}, label="Wissensquellen öffnen")]).send()
+    text = HELP
+    networks = await cl.make_async(neural_networks.labels)()
+    if networks:
+        text += ("\n- **Eigene neuronale Netze:** " + ", ".join(networks.values())
+                 + ". Bilder oder Dateien dafür hängst du einfach an die Nachricht an.")
+    await cl.Message(text, actions=[cl.Action(name="open_documents", payload={}, label="Wissensquellen öffnen")]).send()
 
 
 @cl.action_callback("open_documents")
@@ -139,23 +153,49 @@ async def resume(thread: ThreadDict) -> None:
     await _open_documents_panel()
 
 
-async def _ingest_attachments(message: cl.Message) -> None:
+def _save_upload(source: Path, name: str) -> Path:
+    """Legt eine angehängte Datei unter workspace/Uploads/ ab, ohne eine vorhandene zu überschreiben."""
+    config.UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+    target = config.UPLOADS_DIR / name
+    number = 1
+    while target.exists():
+        target = config.UPLOADS_DIR / f"{Path(name).stem}_{number}{Path(name).suffix}"
+        number += 1
+    shutil.copyfile(source, target)
+    return target
+
+
+async def _ingest_attachments(message: cl.Message) -> list[str]:
+    """Nimmt angehängte Dateien auf und gibt ihre Pfade im Workspace zurück.
+
+    Dokumente (PDF, Word, Text, CSV, ...) kommen in die Wissensbasis, alles andere (Bilder, Audio, ...) nach Uploads/.
+    """
+    paths = []
     for element in message.elements or []:
         if not getattr(element, "path", None):
             continue
+        name = Path(element.name).name
         try:
-            chunks = await cl.make_async(knowledge_base.add_document)(Path(element.path), element.name)
-            await cl.Message(f"✅ **{element.name}** zur Wissensbasis hinzugefügt ({chunks} Abschnitte).").send()
+            if Path(name).suffix.lower() in knowledge_base.SUPPORTED_SUFFIXES:
+                chunks = await cl.make_async(knowledge_base.add_document)(Path(element.path), name)
+                await cl.Message(f"✅ **{name}** zur Wissensbasis hinzugefügt ({chunks} Abschnitte).").send()
+                target = config.DOCUMENTS_DIR / name
+            else:
+                target = await cl.make_async(_save_upload)(Path(element.path), name)
+            paths.append(str(target.resolve().relative_to(config.WORKSPACE_DIR.resolve())))
         except Exception as exc:
-            await cl.Message(f"⚠️ **{element.name}** konnte nicht aufgenommen werden: {exc}").send()
+            await cl.Message(f"⚠️ **{name}** konnte nicht aufgenommen werden: {exc}").send()
+    return paths
 
 
 @cl.on_message
 async def on_message(message: cl.Message) -> None:
-    await _ingest_attachments(message)
+    attachments = await _ingest_attachments(message)
     text = message.content.strip()
     if not text:
         return
+    if attachments:  # So weiß der Agent, unter welchem Pfad er die Dateien an Tools übergeben kann.
+        text += "\n\n[Angehängte Dateien im Workspace: " + ", ".join(f"`{p}`" for p in attachments) + "]"
 
     answer = cl.Message(content="")
     steps: dict[str, cl.Step] = {}
@@ -179,11 +219,15 @@ async def on_message(message: cl.Message) -> None:
             elif kind == "image_agent_start":
                 current = cl.Step(name="Bild-Agent arbeitet", type="run")
                 await current.send()
+            elif kind == "video_agent_start":
+                current = cl.Step(name="Video-Agent arbeitet (dauert einige Minuten)", type="run")
+                await current.send()
             elif kind == "lookup_start":
                 current = cl.Step(name="Dokumentsuche", type="run")
                 await current.send()
             elif kind == "tool_start":
-                step = cl.Step(name=TOOL_LABELS.get(event["name"], event["name"]), type="tool", parent_id=current.id)
+                label = TOOL_LABELS.get(event["name"]) or neural_networks.labels().get(event["name"], event["name"])
+                step = cl.Step(name=label, type="tool", parent_id=current.id)
                 step.input = str(event["args"])
                 steps[event["id"]] = step
                 await step.send()
@@ -208,7 +252,13 @@ async def on_message(message: cl.Message) -> None:
         current.output = "Fertig."
         await current.update()
 
-    # Bilder als Markdown in den Text: so bleiben sie auch in gespeicherten Chats erhalten.
-    answer.content = result["text"] + "".join(f"\n\n![Bild](/images/{name})" for name in result["images"])
+    # Bilder als Markdown in den Text: so bleiben sie auch in gespeicherten Chats erhalten. Videos lassen sich in
+    # Markdown nicht einbetten: Player als Element (nur in diesem Chat) und ein Link, der auch gespeichert bleibt.
+    answer.content = (
+        result["text"]
+        + "".join(f"\n\n![Bild](/images/{name})" for name in result["images"])
+        + "".join(f"\n\n[🎬 Video öffnen](/videos/{name})" for name in result.get("videos", []))
+    )
     answer.elements = [cl.CustomElement(name="SpeakButton", props={"text": result["text"]}, display="inline")]
+    answer.elements += [cl.Video(name=name, url=f"/videos/{name}", display="inline") for name in result.get("videos", [])]
     await answer.send()

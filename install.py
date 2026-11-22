@@ -1,12 +1,13 @@
 """Richtet die virtuelle Umgebung .venv ein, installiert die Abhängigkeiten aus pyproject.toml
-und lädt einmalig das Bildmodell FLUX.2 [klein] 4B nach models/.
+und lädt einmalig das Bildmodell FLUX.2 [klein] 4B nach models/ (mit --video auch das Videomodell).
 
 Läuft unter Linux, WSL, macOS und Windows. Bereits erledigte Schritte werden übersprungen.
 Erneut installiert wird nur, wenn sich pyproject.toml oder die gewählten Extras geändert haben.
 
-Aufruf: python install.py [--dev] [--no-image] [--force]
+Aufruf: python install.py [--dev] [--no-image] [--video] [--force]
   --dev        Test-Pakete (pytest, httpx)
   --no-image   ohne Bildgenerierung (spart PyTorch und etwa 16 GB Modelldownload)
+  --video      zusätzlich das Videomodell Kandinsky 6.0 Video Lite laden (etwa 27 GB)
   --force      .venv neu anlegen und alles neu installieren
 """
 from __future__ import annotations
@@ -152,6 +153,11 @@ def setup_image_model() -> None:
         fail("Download des FLUX-Modells fehlgeschlagen. Erneut ausführen setzt den Download fort.")
 
 
+def setup_video_model() -> None:
+    if run_in_venv("from Agents.video_backend import download_video_model; download_video_model()") != 0:
+        fail("Download des Videomodells fehlgeschlagen. Erneut ausführen setzt den Download fort.")
+
+
 def main() -> None:
     # Sonst erscheinen eigene Meldungen bei umgeleiteter Ausgabe erst nach denen von pip.
     sys.stdout.reconfigure(line_buffering=True)
@@ -159,7 +165,7 @@ def main() -> None:
     if "-h" in args or "--help" in args:
         print(__doc__)
         return
-    unknown = [a for a in args if a not in ("--dev", "--no-image", "--force")]
+    unknown = [a for a in args if a not in ("--dev", "--no-image", "--video", "--force")]
     if unknown:
         fail(f"Unbekannte Option: {' '.join(unknown)} (siehe --help)")
 
@@ -174,11 +180,16 @@ def main() -> None:
 
     force = "--force" in args
     image = "--no-image" not in args
+    video = "--video" in args
+    if video and not image:
+        fail("--video braucht die Pakete der Bildgenerierung, bitte ohne --no-image aufrufen.")
     extras = ["dev"] * ("--dev" in args) + ["image"] * image
     ensure_venv(force)
     install(extras, force)
     if image:
         setup_image_model()
+    if video:
+        setup_video_model()
 
     activate = r".venv\Scripts\activate" if WINDOWS else "source .venv/bin/activate"
     print(f"\nFertig. Umgebung aktivieren mit:\n  {activate}\nDanach starten mit: python main.py")

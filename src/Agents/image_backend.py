@@ -25,7 +25,9 @@ _pipeline = None
 _pipeline_dir: Optional[Path] = None
 _last_used = 0.0
 _release_timer: Optional[threading.Timer] = None
-_lock = threading.Lock()
+# Gemeinsam mit video_backend: immer nur ein Bild oder Video gleichzeitig. RLock, weil video_backend
+# unter dieser Sperre release() aufruft.
+_lock = threading.RLock()
 
 # Gleiche Gewichte liegen im Repo zusätzlich als eine große Einzeldatei; diffusers braucht nur die Unterordner.
 _SKIP_FILES = ["*.jpg", "flux-2-klein-4b.safetensors"]
@@ -112,6 +114,18 @@ def _check_free_ram(model_dir: Path) -> None:
             f"Zu wenig freier Arbeitsspeicher für {model_dir.name}: {available / 1e9:.0f} GB frei, gebraucht "
             f"werden etwa {need / 1e9:.0f} GB. Bitte andere Programme oder eine zweite Instanz des Chatbots schließen."
         )
+
+
+def release() -> None:
+    """Gibt das Bildmodell sofort frei, z. B. bevor ein Video erzeugt wird."""
+    global _pipeline, _pipeline_dir
+    with _lock:
+        if _pipeline is None:
+            return
+        name = _pipeline_dir.name
+        _pipeline = _pipeline_dir = None
+        _free_memory()
+    logger.info("Bildmodell %s freigegeben", name)
 
 
 def _release_if_idle() -> None:

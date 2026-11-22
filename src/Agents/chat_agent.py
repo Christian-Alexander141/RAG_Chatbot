@@ -3,7 +3,9 @@
 - Agent-Modell (AGENT_MODEL, z. B. qwen3:1.7b): ruft die Tools auf (Dateisystem, Bild, Suche).
 - Chat-Modell (CHAT_MODEL, z. B. Teuken): formuliert aus Frage, Dokumenttreffern und Tool-Ergebnissen
   die endgültige Antwort. Sind beide Modelle gleich, entfällt dieser zweite Schritt.
-- Bildwünsche ("Erstelle ein Bild von ...") gehen statt an den Werkzeug-Agenten direkt an den Bild-Agenten.
+- Bildwünsche ("Erstelle ein Bild von ...") gehen statt an den Werkzeug-Agenten direkt an den Bild-Agenten,
+  Videowünsche ("Erstelle ein Video von ...", "Animiere das Bild") direkt an den Video-Agenten.
+- Eigene neuronale Netze (networks/, siehe docs/eigene-netze.md) bekommt der Werkzeug-Agent als zusätzliche Tools.
 - Dokumentanfragen ("Gib mir die Reisekostenrichtlinie") beantwortet die deterministische Dokumentsuche ohne Modell.
 """
 from __future__ import annotations
@@ -20,7 +22,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 
 from rag_chatpipline import config, knowledge_base
 
-from . import document_lookup, image_agent
+from . import document_lookup, image_agent, neural_networks, video_agent
 from .models import ModelChoice
 from .tools import TOOLS, retrieve_context
 
@@ -37,15 +39,17 @@ Werkzeuge:
 - Dateisystem-Tools (list_files, read_file, write_file, make_directory, search_files): Du arbeitest nur
   im Workspace. Überschreibe Dateien nur, wenn der Nutzer es ausdrücklich verlangt.
 - generate_image: Für Bildwünsche. Beschreibe das gewünschte Bild. Es wird dem Nutzer
+  automatisch angezeigt.
+- generate_video: Für Videowünsche. Beschreibe das gewünschte Video. Es wird dem Nutzer
   automatisch angezeigt."""
 
 CHAT_PROMPT = """Du bist der interne Assistent des Unternehmens und läufst vollständig lokal.
 Antworte immer auf Deutsch, freundlich, sachlich und präzise.
 
 Zur aktuellen Nutzerfrage bekommst du Material: Treffer aus den Firmendokumenten, Ergebnisse von
-Werkzeugen (Dateien, Bilder) und den Entwurf eines Hilfsagenten. Schreibe daraus die endgültige Antwort.
+Werkzeugen (Dateien, Bilder, Videos, eigene neuronale Netze) und den Entwurf eines Hilfsagenten. Schreibe daraus die endgültige Antwort.
 Erfinde nichts dazu. Nenne bei Firmenwissen die Quelle (Dateiname). Gibt das Material nichts her, sage
-das offen. Wurde ein Bild erzeugt, erwähne nur kurz, dass es unten angezeigt wird."""
+das offen. Wurde ein Bild oder Video erzeugt, erwähne nur kurz, dass es unten angezeigt wird."""
 
 MAX_TOOL_OUTPUT = 1500
 MAX_HISTORY_MESSAGES = 20
@@ -56,6 +60,8 @@ _agents: dict[str, Any] = {}
 _chat_models: dict[tuple[str, str], Any] = {}
 _checkpointer = InMemorySaver()
 _histories: dict[str, list[BaseMessage]] = {}
+# Zuletzt erzeugtes Bild je Chat, für "Animiere das Bild"
+_last_images: dict[str, str] = {}
 
 
 @dataclass
@@ -66,14 +72,20 @@ class TurnContext:
     models: Optional[ModelChoice] = None
 
 
+def agent_prompt() -> str:
+    """AGENT_PROMPT plus die eigenen neuronalen Netze, damit auch kleine Modelle sie finden."""
+    networks = neural_networks.prompt_section()
+    return f"{AGENT_PROMPT}\n{networks}" if networks else AGENT_PROMPT
+
+
 @dynamic_prompt
 def add_retrieved_context(request: ModelRequest) -> str:
     """Hängt die Dokumenttreffer an den Prompt. Kleine Modelle rufen ein Suchtool oft nicht selbst auf."""
     context = getattr(request.runtime, "context", None)
     documents = getattr(context, "documents", "")
     if not documents:
-        return AGENT_PROMPT
-    return f"{AGENT_PROMPT}\n\nTreffer aus den Firmendokumenten:\n{documents}"
+        return agent_prompt()
+    return f"{agent_prompt()}\n\nTreffer aus den Firmendokumenten:\n{documents}"
 
 
 def build_agent(model: Any = None, checkpointer: Any = None, tools: Optional[list] = None,
@@ -89,9 +101,12 @@ def build_agent(model: Any = None, checkpointer: Any = None, tools: Optional[lis
             temperature=0.3,
             reasoning=config.AGENT_REASONING,
         )
+    if tools is None:
+        # Eingebaute Tools und eigene neuronale Netze. Für create_agent sind beide einfach Tools.
+        tools = TOOLS + neural_networks.tools()
     return create_agent(
         model=model,
-        tools=TOOLS if tools is None else tools,
+        tools=tools,
         middleware=[add_retrieved_context],
         context_schema=TurnContext,
         checkpointer=checkpointer or InMemorySaver(),
@@ -192,6 +207,23 @@ def _run_image_agent(message: str, chat_id: str, agent: Any, models: ModelChoice
     return [ToolMessage(content, artifact=artifact, name="generate_image", tool_call_id=call_id), AIMessage(draft)]
 
 
+def _run_video_agent(message: str, chat_id: str, agent: Any, models: ModelChoice):
+    """Gibt einen Videowunsch an den Video-Agenten. Liefert dieselben Ereignisse wie ein generate_video-Aufruf."""
+    yield {"event": "video_agent_start"}
+    thread = {"configurable": {"thread_id": chat_id}}
+    history = agent.get_state(thread).values.get("messages", [])
+    prompt = video_agent.write_prompt(message, history, model_name=models.image_prompt)
+    start = video_agent.start_image(message, _last_images.get(chat_id))
+    call_id = f"video-{uuid.uuid4().hex[:8]}"
+    yield {"event": "tool_start", "id": call_id, "name": "generate_video", "args": {"prompt": prompt, "start_image": start}}
+    content, artifact = video_agent.generate(prompt, models.video, start)
+    yield {"event": "tool_end", "id": call_id, "name": "generate_video", "output": content}
+
+    draft = "Hier ist das Video." if artifact else content
+    agent.update_state(thread, {"messages": [HumanMessage(message), AIMessage(draft)]}, as_node="model")
+    return [ToolMessage(content, artifact=artifact, name="generate_video", tool_call_id=call_id), AIMessage(draft)]
+
+
 def _find_documents(message: str) -> list[str]:
     if not document_lookup.is_fetch_request(message):
         return []
@@ -219,8 +251,9 @@ def chat_stream(message: str, chat_id: Optional[str] = None, agent: Any = None,
                 chat_model: Any = None, models: Optional[ModelChoice] = None) -> Iterator[dict[str, Any]]:
     """Wie chat(), liefert aber Ereignisse, sobald sie eintreten (Fortschritt und Antwort-Tokens).
 
-    Ereignisse (Schlüssel "event"): start, retrieval_start, retrieval_end, agent_start, image_agent_start oder
-    lookup_start, tool_start, tool_end, write_start, token, done. "done" enthält unter "result" das Ergebnis wie chat().
+    Ereignisse (Schlüssel "event"): start, retrieval_start, retrieval_end, agent_start, image_agent_start,
+    video_agent_start oder lookup_start, tool_start, tool_end, write_start, token, done. "done" enthält unter
+    "result" das Ergebnis wie chat().
     models gibt die Modelle für diesen Zug vor (Einstellungen des Nutzers), sonst gilt die Konfiguration.
     """
     chat_id = chat_id or f"chat-{uuid.uuid4().hex[:12]}"
@@ -229,7 +262,10 @@ def chat_stream(message: str, chat_id: Optional[str] = None, agent: Any = None,
     chat_model = chat_model or get_chat_model(models.chat, models.agent)
     yield {"event": "start", "chat_id": chat_id}
 
-    if image_agent.is_image_request(message):
+    if video_agent.is_video_request(message):  # vor den Bildern: "Erstelle ein Video aus dem Bild"
+        documents = ""
+        turn = yield from _run_video_agent(message, chat_id, agent, models)
+    elif image_agent.is_image_request(message):
         documents = ""
         turn = yield from _run_image_agent(message, chat_id, agent, models)
     elif found := _find_documents(message):
@@ -238,7 +274,7 @@ def chat_stream(message: str, chat_id: Optional[str] = None, agent: Any = None,
         history += [HumanMessage(message), AIMessage(text)]
         del history[:-MAX_HISTORY_MESSAGES]
         yield {"event": "token", "text": text}
-        yield {"event": "done", "result": {"chat_id": chat_id, "text": text, "images": []}}
+        yield {"event": "done", "result": {"chat_id": chat_id, "text": text, "images": [], "videos": []}}
         return
     else:
         yield {"event": "retrieval_start"}
@@ -251,8 +287,14 @@ def chat_stream(message: str, chat_id: Optional[str] = None, agent: Any = None,
         turn = yield from _run_tool_agent(message, chat_id, agent, TurnContext(documents, models))
 
     tool_messages = [m for m in turn if isinstance(m, ToolMessage)]
-    images = [m.artifact["name"] for m in tool_messages if isinstance(m.artifact, dict) and "name" in m.artifact]
-    draft = next((str(m.content) for m in reversed(turn) if isinstance(m, AIMessage)), "")
+    artifacts = [m.artifact for m in tool_messages if isinstance(m.artifact, dict)]
+    images = [a["name"] for a in artifacts if "name" in a]
+    videos = [a["video"] for a in artifacts if "video" in a]
+    if images:
+        _last_images[chat_id] = images[-1]
+    draft = next((str(m.content) for m in reversed(turn) if isinstance(m, AIMessage)), "").strip()
+    if not draft:  # Kleine Modelle antworten nach einem Tool-Aufruf manchmal leer: dann das Tool-Ergebnis zeigen
+        draft = "\n\n".join(str(m.content) for m in tool_messages)
 
     if chat_model is None:
         text = draft
@@ -274,14 +316,14 @@ def chat_stream(message: str, chat_id: Optional[str] = None, agent: Any = None,
         history += [HumanMessage(message), AIMessage(text)]
         del history[:-MAX_HISTORY_MESSAGES]
 
-    yield {"event": "done", "result": {"chat_id": chat_id, "text": text, "images": images}}
+    yield {"event": "done", "result": {"chat_id": chat_id, "text": text, "images": images, "videos": videos}}
 
 
 def chat(message: str, chat_id: Optional[str] = None, agent: Any = None, chat_model: Any = None,
          models: Optional[ModelChoice] = None) -> dict[str, Any]:
     """Schickt eine Nachricht durch Agent und Chat-Modell. Der Verlauf wird pro chat_id gehalten.
 
-    Gibt {"chat_id", "text", "images"} zurück; images sind die in diesem Zug erzeugten Bilder.
+    Gibt {"chat_id", "text", "images", "videos"} zurück: die in diesem Zug erzeugten Bilder und Videos.
     """
     for event in chat_stream(message, chat_id, agent, chat_model, models):
         if event["event"] == "done":

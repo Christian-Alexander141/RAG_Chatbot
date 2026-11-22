@@ -16,6 +16,17 @@ def no_prompt_model(monkeypatch):
     monkeypatch.setattr(image_agent, "get_prompt_model", lambda name=None: None)
 
 
+@pytest.fixture(autouse=True)
+def no_user_networks(tmp_path, monkeypatch):
+    """Tests sehen nie die echten Netze unter networks/, nur die, die ein Test selbst anlegt."""
+    from Agents import neural_networks
+
+    monkeypatch.setattr(config, "NETWORKS_DIR", tmp_path / "networks")
+    neural_networks.reset()
+    yield
+    neural_networks.reset()
+
+
 @pytest.fixture
 def workspace(tmp_path, monkeypatch):
     """Isolierter Workspace, damit Tests nie echte Daten anfassen."""
@@ -23,6 +34,8 @@ def workspace(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "WORKSPACE_DIR", root)
     monkeypatch.setattr(config, "DOCUMENTS_DIR", root / "Dateien")
     monkeypatch.setattr(config, "IMAGES_DIR", root / "AIbilder")
+    monkeypatch.setattr(config, "VIDEOS_DIR", root / "AIvideos")
+    monkeypatch.setattr(config, "UPLOADS_DIR", root / "Uploads")
     monkeypatch.setattr(config, "MEMORY_DIR", tmp_path / "memory")
     config.ensure_dirs()
     return root

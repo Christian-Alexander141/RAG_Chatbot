@@ -32,13 +32,16 @@ dev = [
     "pytest",
     "httpx",
 ]
-# Lokale Bildgenerierung mit FLUX.2 [klein] 4B. Der Installer wählt die passende PyTorch-Variante (CUDA/CPU).
+# Lokale Bild- und Videogenerierung (FLUX.2 [klein] 4B, Kandinsky 6.0 Video Lite) und die Beispielnetze unter
+# networks/. Der Installer wählt die passende PyTorch-Variante (CUDA/CPU).
 image = [
     "torch",
     "diffusers",
     "transformers",
     "accelerate",
     "huggingface_hub",
+    "pillow",
+    "av",  # PyAV: Videos mit Ton als MP4 speichern
 ]
 
 [tool.setuptools]

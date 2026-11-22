@@ -48,17 +48,20 @@ def get_prompt_model(name: Optional[str] = None):
 
 
 def write_prompt(request: str, history: Iterable[BaseMessage] = (), model_name: Optional[str] = None,
-                 model: Any = None) -> str:
-    """Formuliert den Bildwunsch als englischen FLUX-Prompt. Klappt das nicht, bleibt der Wunsch wie er ist."""
+                 model: Any = None, instructions: str = PROMPT_WRITER, label: str = "Bildwunsch") -> str:
+    """Formuliert den Bildwunsch als englischen FLUX-Prompt. Klappt das nicht, bleibt der Wunsch wie er ist.
+
+    Der Video-Agent nutzt dieselbe Funktion mit eigenen instructions.
+    """
     model = model or get_prompt_model(model_name)
     if model is None:
         return request
     recent = [m for m in history if isinstance(m, (HumanMessage, AIMessage)) and str(m.content).strip()]
     context = [type(m)(str(m.content)[:MAX_HISTORY_CHARS]) for m in recent[-MAX_HISTORY_MESSAGES:]]
     try:
-        reply = model.invoke([SystemMessage(PROMPT_WRITER), *context, HumanMessage(f"Bildwunsch: {request}")])
+        reply = model.invoke([SystemMessage(instructions), *context, HumanMessage(f"{label}: {request}")])
     except Exception:
-        logger.warning("Prompt für FLUX konnte nicht formuliert werden, nutze den Wunsch direkt", exc_info=True)
+        logger.warning("Prompt konnte nicht formuliert werden, nutze den Wunsch direkt", exc_info=True)
         return request
     prompt = re.sub(r"<think>.*?</think>", "", str(reply.content), flags=re.DOTALL)
     prompt = re.sub(r"^\s*prompt:\s*", "", prompt.strip(), flags=re.IGNORECASE).strip().strip('"')

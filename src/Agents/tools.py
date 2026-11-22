@@ -1,16 +1,19 @@
-"""Tools des Chat-Agenten: Wissensbasis, Dateisystem (auf den Workspace begrenzt) und Bildgenerierung."""
+"""Tools des Chat-Agenten: Wissensbasis, Dateisystem (auf den Workspace begrenzt), Bild- und Videogenerierung.
+
+Eigene neuronale Netze kommen als weitere Tools aus neural_networks dazu (siehe docs/eigene-netze.md).
+"""
 from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from langchain.tools import ToolRuntime
 from langchain_core.tools import tool
 
 from rag_chatpipline import config, knowledge_base
 
-from . import image_agent
+from . import image_agent, video_agent
 
 logger = logging.getLogger(__name__)
 
@@ -162,4 +165,19 @@ def generate_image(prompt: str, runtime: ToolRuntime[Any]) -> tuple[str, dict]:
     return image_agent.generate(image_agent.write_prompt(prompt, model_name=models.image_prompt), models.image)
 
 
-TOOLS = [search_documents, list_files, read_file, write_file, make_directory, search_files, generate_image]
+# === Videogenerierung ===
+@tool(response_format="content_and_artifact")
+def generate_video(prompt: str, runtime: ToolRuntime[Any], start_image: Optional[str] = None) -> tuple[str, dict]:
+    """Erzeugt ein kurzes Video mit Ton und zeigt es dem Nutzer im Chat an. Nutze dieses Tool, wenn der
+    Nutzer ein Video, einen Clip oder eine Animation möchte. Dauert mehrere Minuten.
+
+    Args:
+        prompt: Beschreibung des gewünschten Videos.
+        start_image: Optional: Pfad eines Bildes im Workspace, aus dem das Video entstehen soll, z. B. "Uploads/foto.png".
+    """
+    models = getattr(runtime.context, "models", None)
+    prompt = video_agent.write_prompt(prompt, model_name=models.image_prompt if models else None)
+    return video_agent.generate(prompt, models.video if models else None, start_image)
+
+
+TOOLS = [search_documents, list_files, read_file, write_file, make_directory, search_files, generate_image, generate_video]

@@ -1,23 +1,25 @@
-"""Welche Modelle Chat, Agenten und Bildgenerierung nutzen, und welche zur Auswahl stehen."""
+"""Welche Modelle Chat, Agenten, Bild- und Videogenerierung nutzen, und welche zur Auswahl stehen."""
 from __future__ import annotations
 
 from dataclasses import dataclass
 
 from rag_chatpipline import config, ollama_models
 
-from . import image_backend
+from . import image_backend, video_backend
 
 
 @dataclass(frozen=True)
 class ModelChoice:
     chat: str  # formuliert die Antworten
     agent: str  # Werkzeug-Agent, braucht Tool-Calling
-    image_prompt: str  # Bild-Agent, schreibt die FLUX-Prompts
+    image_prompt: str  # Bild- und Video-Agent, schreibt die Prompts für FLUX und das Videomodell
     image: str  # Bildmodell, Ordnername unter models/
+    video: str = ""  # Videomodell, Ordnername unter models/video/ (leer = Standard)
 
     @classmethod
     def defaults(cls) -> ModelChoice:
-        return cls(config.CHAT_MODEL, config.AGENT_MODEL, config.IMAGE_PROMPT_MODEL, config.FLUX_MODEL_DIR.name)
+        return cls(config.CHAT_MODEL, config.AGENT_MODEL, config.IMAGE_PROMPT_MODEL, config.FLUX_MODEL_DIR.name,
+                   config.VIDEO_MODEL_DIR.name)
 
 
 def language_models() -> dict[str, list[str]]:
@@ -33,3 +35,7 @@ def language_models() -> dict[str, list[str]]:
 
 def image_models() -> list[str]:
     return image_backend.available_image_models()
+
+
+def video_models() -> list[str]:
+    return video_backend.available_video_models()

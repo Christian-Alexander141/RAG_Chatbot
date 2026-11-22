@@ -9,8 +9,12 @@ __pycache__/
 *.egg-info/
 build/
 
-# Lokale Modelle (FLUX, lädt der Installer)
+# Lokale Modelle (FLUX und Videomodelle, lädt der Installer)
 models/
+
+# Eigene neuronale Netze: Code gehört ins Repository, Trainingsdaten und Gewichte nicht (entstehen mit train.py)
+networks/*/daten/
+networks/**/*.pt
 
 # Project folders
 Dateien/
