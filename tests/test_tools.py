@@ -51,3 +51,13 @@ def test_generate_image_reports_errors_to_the_agent(workspace, monkeypatch):
     monkeypatch.setattr(config, "IMAGE_BACKEND", "gibtsnicht")
     result = tools.generate_image.invoke(image_call("a cat"))
     assert "fehlgeschlagen" in result.content and result.artifact == {}
+
+
+def test_agent_never_overwrites_knowledge_base_documents(workspace):
+    from rag_chatpipline import config
+
+    (config.DOCUMENTS_DIR / "richtlinie.txt").write_text("Original")
+    reply = tools.write_file.invoke({"path": "Dateien/richtlinie.txt", "content": "weg", "overwrite": True})
+    assert "Wissensbasis" in reply
+    assert (config.DOCUMENTS_DIR / "richtlinie.txt").read_text() == "Original"
+    assert "geschrieben" in tools.write_file.invoke({"path": "Dateien/neu.txt", "content": "neu"})

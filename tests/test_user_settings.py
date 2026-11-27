@@ -46,3 +46,44 @@ def test_language_models_without_ollama(monkeypatch):
 
     monkeypatch.setattr(ollama_models, "_ollama", offline)
     assert models.language_models() == {"chat": [], "tools": [], "embedding": []}
+
+
+def test_cloud_models_only_on_request_and_never_for_embeddings(monkeypatch):
+    tags = {"models": [
+        {"name": "qwen3.5:2b"}, {"name": "granite-embedding:278m"},
+        {"name": "gpt-oss:120b-cloud", "remote_host": "https://ollama.com:443"},
+        {"name": "embed-cloud", "remote_host": "https://ollama.com:443"},
+    ]}
+    caps = {"qwen3.5:2b": ["completion", "tools"], "granite-embedding:278m": ["embedding"],
+            "gpt-oss:120b-cloud": ["completion", "tools"], "embed-cloud": ["embedding"]}
+    monkeypatch.setattr(ollama_models, "_ollama",
+                        lambda path, payload=None: tags if path == "/api/tags" else {"capabilities": caps[payload["model"]]})
+    assert "gpt-oss:120b-cloud" not in models.language_models()["chat"]
+    admin = models.language_models(include_cloud=True)
+    assert admin["chat"] == admin["tools"] == ["gpt-oss:120b-cloud", "qwen3.5:2b"]
+    assert admin["embedding"] == ["granite-embedding:278m"]  # sonst gingen alle Dokumente an fremde Server
+
+
+def test_validated_keeps_only_offered_models():
+    current = ModelChoice("mistral:7b", "qwen3.5:2b", "qwen3.5:2b", "FLUX.2-klein-4B")
+    available = {"chat": ["mistral:7b", "qwen3.5:9b"], "agent": ["qwen3.5:2b"], "image_prompt": ["mistral:7b"],
+                 "image": [], "video": []}
+    # Gefälscht: Cloud-Modell und unbekanntes Bildmodell, obwohl nicht angeboten
+    settings = {"chat": "qwen3.5:9b", "agent": "gpt-oss:120b-cloud", "image_prompt": "", "image": "anderes-bild"}
+    choice = user_settings.validated(settings, available, current)
+    assert choice == ModelChoice("qwen3.5:9b", "qwen3.5:2b", "qwen3.5:2b", "FLUX.2-klein-4B", current.video)
+
+
+def test_a_broken_model_does_not_hide_the_others(monkeypatch):
+    tags = {"models": [{"name": "qwen3.5:2b"}, {"name": "alt-cloud", "remote_host": "https://ollama.com:443"},
+                       {"name": "gpt-oss:120b-cloud", "remote_host": "https://ollama.com:443"}]}
+
+    def ollama(path, payload=None):
+        if path == "/api/tags":
+            return tags
+        if payload["model"] == "alt-cloud":
+            raise OSError("HTTP Error 410: Gone")  # Cloud-Modell gibt es nicht mehr
+        return {"capabilities": ["completion"]}
+
+    monkeypatch.setattr(ollama_models, "_ollama", ollama)
+    assert models.language_models(include_cloud=True)["chat"] == ["gpt-oss:120b-cloud", "qwen3.5:2b"]

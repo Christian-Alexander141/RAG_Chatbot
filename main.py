@@ -28,6 +28,8 @@ use_project_venv()
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
+from rag_chatpipline.ad_auth import ADError  # noqa: E402
+
 try:
     from rag_chatpipline.api_server import app as rag_app
     from Agents.chat_agent import chat
@@ -36,6 +38,8 @@ except ModuleNotFoundError as exc:
         f"Paket fehlt: {exc.name}. Bitte zuerst die Projekt-Umgebung einrichten: "
         "./install.sh (Windows: install.bat)"
     ) from exc
+except ADError as exc:  # AD_ENABLED=true, aber AD_SERVER, AD_DOMAIN oder ldap3 fehlen
+    raise SystemExit(f"AD-Anmeldung: {exc}") from exc
 
 
 def run_backend(host: str = "0.0.0.0", port: int = 8000) -> None:
@@ -137,7 +141,7 @@ def run_all(host: str = "0.0.0.0", port: int = 8000) -> None:
 
 def run_cli() -> None:
     parser = argparse.ArgumentParser(description="Zentraler Einstiegspunkt für die RAG-Chatbot-App")
-    parser.add_argument("--mode", choices=["backend", "frontend", "all", "chat", "networks", "transcribe"], default="backend")
+    parser.add_argument("--mode", choices=["backend", "frontend", "all", "chat", "networks", "transcribe", "ad"], default="backend")
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--message", default="Hallo")
@@ -145,7 +149,13 @@ def run_cli() -> None:
     parser.add_argument("--network", default=None, help="mit --mode networks: dieses eigene Netz direkt aufrufen")
     parser.add_argument("--args", default="{}", help='mit --network: Argumente als JSON, z. B. \'{"bild": "Uploads/7.png"}\'')
     parser.add_argument("--file", default=None, help="mit --mode transcribe: Audiodatei, die in Text umgewandelt wird")
+    parser.add_argument("--user", default=None, help="mit --mode ad: Benutzername für die Probe-Anmeldung am AD")
     args = parser.parse_args()
+
+    if args.mode == "ad":
+        from rag_chatpipline import ad_auth
+
+        raise SystemExit(ad_auth.cli(args.user))
 
     if args.mode == "transcribe":
         from Agents import speech

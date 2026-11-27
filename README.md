@@ -24,6 +24,7 @@ Prototyp eines firmeninternen Chatbots, der lokal laufende Sprachmodelle über *
 - **Für Videos (optional):** etwa 30 GB freier Speicherplatz für das Modell und etwa 25 GB freier Arbeitsspeicher beim Laden (48 GB RAM im Rechner empfohlen), eine NVIDIA-GPU. Siehe [Videogenerierung](#videogenerierung).
 - **Für die Beispielnetze** unter `networks/`: PyTorch und Pillow, beides bringt die Standardinstallation mit.
 - **Für die Spracheingabe:** PyTorch (Standardinstallation), etwa 1,6 GB Speicherplatz für das Modell und ein Mikrofon. Eine GPU ist nicht nötig, macht die Erkennung aber deutlich schneller.
+- **Für die Anmeldung mit Active Directory (optional):** ein Domänencontroller, der LDAPS oder StartTLS anbietet. Siehe [Anmeldung mit Active Directory](#anmeldung-mit-active-directory-optional).
 
 ## Installation
 
@@ -39,10 +40,11 @@ Beide Starter rufen `install.py` auf. Das geht auch direkt: `python install.py -
 
 | Option | Wirkung |
 |---|---|
-| `--dev` | zusätzlich die Test-Pakete (pytest, httpx) |
+| `--dev` | zusätzlich die Test-Pakete (pytest, httpx, ldap3) |
 | `--no-image` | ohne Bildgenerierung: kein PyTorch, kein FLUX-Download (damit auch keine Spracheingabe) |
 | `--no-speech` | ohne Spracheingabe: kein Download des Spracherkennungsmodells |
 | `--video` | zusätzlich das Videomodell Kandinsky 6.0 Video Lite laden (etwa 27 GB) |
+| `--ad` | zusätzlich das Paket für die Anmeldung mit Active Directory (ldap3) |
 | `--force` | `.venv` neu anlegen und alles neu installieren |
 
 Der Installer erledigt nacheinander:
@@ -123,7 +125,7 @@ Ein Videowunsch braucht ebenso ein Verb und ein Videowort (Video, Clip, Film, An
 
 Selbst geschriebene Netze, z. B. ein CNN zur Handschrifterkennung oder ein LSTM zur Kursprognose, werden zu Tools des Werkzeug-Agenten. Je Netz gibt es einen Ordner unter `networks/` mit einer Datei `network.py`, darin eine Klasse mit Name, Beschreibung, `load()` und `predict()`. Beim Start liest der Chatbot alle Netze ein und gibt sie zusammen mit den eingebauten Tools an `create_agent`. Das Sprachmodell entscheidet anhand der Beschreibung, wann es ein Netz aufruft, und formuliert aus dem Ergebnis die Antwort.
 
-Zwei Beispiele liegen bei: `networks/handschrift/` (CNN auf MNIST) und `networks/aktienkurs/` (LSTM, zeigt zusätzlich ein Diagramm). Ihre Gewichte entstehen mit dem jeweiligen `train.py`.
+Drei Beispiele liegen bei: `networks/handschrift/` (CNN auf MNIST), `networks/aktienkurs/` (LSTM auf Schlusskursen, zeigt zusätzlich ein Diagramm) und `networks/aktienkurs_ohlcv/` (LSTM auf Tageskerzen mit Eröffnung, Hoch, Tief, Schluss und Volumen, in PyTorch nachgebaut nach dem Keras-Projekt [Stock-Market-Prediction-Model](https://github.com/harshitt13/Stock-Market-Prediction-Model)). Ihre Gewichte entstehen mit dem jeweiligen `train.py`.
 
 ```bash
 python networks/handschrift/train.py                   # Gewichte erzeugen
@@ -137,14 +139,14 @@ Die ausführliche Anleitung mit Vorlage, Referenz, Beispielen und Fehlerbehebung
 
 - **Antworten** erscheinen Wort für Wort. Darüber zeigt die Oberfläche die Arbeitsschritte (Wissensbasis, Tool-Aufrufe, Bild-Agent, Antwort formulieren). Bei Bildern steht dort auch der Prompt, den der Bild-Agent geschrieben hat.
 - **Einstellungen** (Benutzermenü oben rechts oder Zahnrad neben dem Eingabefeld): Chat-Modell, Werkzeug-Agent, Bild-Agent und Bildmodell wählen. Mehr dazu unter [Einstellungen](#einstellungen).
-- **Wissensquellen** (rechte Seitenleiste): Dokumente hochladen, per Klick auf den Namen öffnen und entfernen. Alternativ eine Datei an eine Nachricht anhängen.
+- **Wissensquellen** (rechte Seitenleiste): Dokumente hochladen, per Klick auf den Namen öffnen und entfernen. Alternativ eine Datei an eine Nachricht anhängen. Mit der [Anmeldung mit Active Directory](#anmeldung-mit-active-directory-optional) darf jeder hochladen, löschen und vorhandene Dokumente ersetzen dürfen nur Admins.
 - **Angehängte Bilder** und andere Dateien, die keine Dokumente sind, landen in `workspace/Uploads/`. Der Agent erfährt ihren Pfad und kann sie an eigene neuronale Netze oder den Video-Agenten geben („Welche Ziffer steht auf dem Bild?“, „Mach daraus ein Video“).
 - **Videos** erscheinen mit Player unter der Antwort, dazu ein Link *Video öffnen*. In wieder geöffneten alten Chats bleibt nur der Link.
 - **Spracheingabe:** Mikrofon-Knopf neben dem Eingabefeld drücken, sprechen, zum Beenden erneut drücken. Der erkannte Text erscheint als deine Nachricht und wird beantwortet wie eine getippte. Siehe [Spracheingabe](#spracheingabe).
 - **Dokumente direkt:** „Gib mir die Reisekostenrichtlinie“ antwortet sofort mit einem Link zum Dokument.
 - **Alte Chats** (linke Seitenleiste): Chats werden in `memory/chainlit.db` gespeichert und lassen sich wieder öffnen. Der Gesprächsverlauf wird dabei für das Modell wiederhergestellt, auch nach einem Neustart.
 - **Vorlesen:** Button an jeder neuen Antwort (nicht in wieder geöffneten alten Chats).
-- **Nutzer:** Es gibt keinen Login. Alle teilen sich den Nutzer `lokal`. Steht ein Reverse-Proxy mit SSO davor, der den Header `X-Forwarded-User` setzt, hat jeder seine eigenen Chats und Einstellungen. Ohne vertrauenswürdigen Proxy lässt sich dieser Header fälschen.
+- **Nutzer:** Es gibt keinen Login. Alle teilen sich den Nutzer `lokal`. Steht ein Reverse-Proxy mit SSO davor, der den Header `X-Forwarded-User` setzt, hat jeder seine eigenen Chats und Einstellungen. Ohne vertrauenswürdigen Proxy lässt sich dieser Header fälschen. Mit `AD_ENABLED=true` meldet sich stattdessen jeder mit seinem Windows-Konto an, siehe [Anmeldung mit Active Directory](#anmeldung-mit-active-directory-optional).
 
 ## Einstellungen
 
@@ -152,14 +154,15 @@ Die ausführliche Anleitung mit Vorlage, Referenz, Beispielen und Fehlerbehebung
 
 | Einstellung | Wofür | Zur Auswahl |
 |---|---|---|
-| Chat-Modell | formuliert die Antworten | lokale Ollama-Sprachmodelle |
-| Werkzeug-Agent | Dokumentsuche, Dateien | lokale Ollama-Modelle mit Tool-Calling |
-| Bild- und Video-Agent | schreibt die Prompts für FLUX und das Videomodell | lokale Ollama-Sprachmodelle |
+| Chat-Modell | formuliert die Antworten | lokale Ollama-Sprachmodelle (Admins: auch Cloud-Modelle) |
+| Werkzeug-Agent | Dokumentsuche, Dateien | lokale Ollama-Modelle mit Tool-Calling (Admins: auch Cloud-Modelle) |
+| Bild- und Video-Agent | schreibt die Prompts für FLUX und das Videomodell | lokale Ollama-Sprachmodelle (Admins: auch Cloud-Modelle) |
 | Bildmodell | erzeugt die Bilder | vollständig heruntergeladene Modelle unter `models/` |
 | Videomodell | erzeugt die Videos | vollständig heruntergeladene Modelle unter `models/video/` |
-| Embedding-Modell (für alle Nutzer) | Bedeutungssuche in der Wissensbasis | lokale Ollama-Embedding-Modelle |
+| Embedding-Modell (für alle Nutzer) | Bedeutungssuche in der Wissensbasis | lokale Ollama-Embedding-Modelle; mit AD-Anmeldung nur für Admins |
 
-- **Nur lokale Modelle:** Cloud-Modelle von Ollama (z. B. `gpt-oss:120b-cloud`) erscheinen absichtlich nicht, weil sie Daten an fremde Server schicken würden. Embedding-Modelle erscheinen nur im Feld *Embedding-Modell*.
+- **Nur lokale Modelle:** Cloud-Modelle von Ollama (z. B. `gpt-oss:120b-cloud`) erscheinen absichtlich nicht, weil sie Daten an fremde Server schicken würden. Ausnahme: Mit der [Anmeldung mit Active Directory](#anmeldung-mit-active-directory-optional) bekommen Admins sie als Chat-, Agent- und Prompt-Modell angeboten. Embedding-Modelle sind immer lokal, sonst gingen alle Dokumente der Wissensbasis an fremde Server. Sie erscheinen nur im Feld *Embedding-Modell*.
+- **Admins (nur mit AD-Anmeldung):** Nur Mitglieder von `AD_ADMIN_GROUPS` sehen das Feld *Embedding-Modell* und die Cloud-Modelle. Ohne AD-Anmeldung gibt es keine Admins: Das Embedding-Modell kann jeder wählen, Cloud-Modelle niemand. Der Server prüft jede Wahl nach, ein nicht angebotenes Modell lässt sich auch nicht über den Browser unterschieben.
 - **Speicherung:** Die Wahl gilt sofort und wird pro Nutzer in `memory/user_settings.json` gespeichert. Ist ein gespeichertes Modell nicht mehr installiert, nimmt die App den Standard aus der Konfiguration und, falls auch der fehlt, das erste verfügbare Modell.
 - **Gesprächsverlauf:** Ein Wechsel des Agent-Modells mitten im Chat behält den Verlauf.
 - **Embedding-Modell:** Es gehört zur gemeinsamen Wissensbasis und gilt deshalb für **alle** Nutzer (gespeichert in `memory/app_settings.json`). Jedes Embedding-Modell hat in Qdrant eine eigene Sammlung. Beim Wechsel liest die App die Dokumente aus dem Dokumentenordner mit dem neuen Modell ein, eine Meldung im Chat zeigt Beginn und Ende. Wechselt man zu einem früher genutzten Modell zurück, werden nur die inzwischen hinzugekommenen Dokumente eingelesen. Ist das eingestellte Modell nicht installiert und wurde noch keins gewählt, nimmt die App das erste installierte Embedding-Modell.
@@ -226,6 +229,48 @@ Gesprochene Fragen wandelt **[Whisper large-v3-turbo](https://huggingface.co/ope
 - **Ohne Oberfläche:** `python main.py --mode transcribe --file aufnahme.wav` wandelt eine Audiodatei um (WAV, MP3, OGG, M4A, WebM, …). Für andere Programme gibt es `POST /transcribe`.
 - **Mikrofon im Browser:** Browser geben das Mikrofon nur frei, wenn die Seite auf demselben Rechner aufgerufen wird oder über HTTPS kommt. Die Nutzung von anderen Geräten aus ist noch nicht eingerichtet.
 
+## Anmeldung mit Active Directory (optional)
+
+Ohne weitere Einstellung gibt es keine Anmeldung (siehe *Nutzer* unter [Bedienung](#bedienung)). In einer Windows-Domäne kann sich der Chatbot stattdessen an das Microsoft Active Directory anbinden: Jeder meldet sich mit seinem Windows-Konto an und sieht nur seine eigenen Chats und Einstellungen. In einer Linux-Umgebung ohne AD bleibt die Funktion aus, und alles läuft wie bisher.
+
+**Einschalten:** Die Anmeldung ist eine Einstellung des Servers, nicht des Dialogs *Einstellungen* im Chat. Wer sie dort abschalten könnte, bräuchte sich gar nicht erst anzumelden. Eingeschaltet wird sie beim Start über Umgebungsvariablen:
+
+```bash
+./install.sh --ad          # einmalig das Paket ldap3 installieren, dazu die sonst genutzten Optionen (Windows: install.bat --ad)
+
+export AD_ENABLED=true
+export AD_SERVER=ldaps://dc01.firma.local     # mehrere Domänencontroller kommagetrennt
+export AD_DOMAIN=firma.local
+export AD_BIND_USER=svc-chatbot               # Dienstkonto für die laufende Prüfung
+export AD_BIND_PASSWORD_FILE=/pfad/zum/passwort.txt   # oder AD_BIND_PASSWORD=...
+export AD_ALLOWED_GROUPS="Chatbot-Nutzer"      # optional
+export AD_ADMIN_GROUPS="Chatbot-Admins"        # optional
+python main.py --mode ad --user mmuster       # Probe-Anmeldung, ohne den Chatbot zu starten
+python main.py
+```
+
+Unter Windows (PowerShell) heißt es `$env:AD_ENABLED="true"` usw. Die Werte oben sind Beispiele.
+
+**So funktioniert es:**
+
+- Die Oberfläche zeigt eine Anmeldeseite. Als Benutzername gehen `mmuster`, `FIRMA\mmuster` und `mmuster@firma.local`.
+- Der Chatbot prüft das Passwort per LDAP direkt am Domänencontroller, angemeldet wird als der Nutzer selbst. Der Server des Chatbots muss nicht Mitglied der Domäne sein. Das funktioniert unter Linux und Windows.
+- **Gesperrte Konten verlieren den Zugang sofort.** Nach der Anmeldung fragt der Chatbot vor jeder Aktion im AD nach, ob das Konto noch Zugang hat: nicht gesperrt (z. B. zu viele falsche Passwörter oder von Hand), nicht deaktiviert, nicht abgelaufen, nicht gelöscht und noch in einer erlaubten Gruppe. Das gilt für jede Nachricht und Spracheingabe, für Einstellungen, das Öffnen von Chats und für alle Anfragen an die API und die Dateien. Fehlt der Zugang, bekommt ein offener Chat nur noch einen Hinweis, der Browser wird abgemeldet und sieht beim nächsten Laden die Anmeldeseite. Ein Ergebnis gilt `AD_CHECK_SECONDS` Sekunden (Standard 10, `0` = bei jeder Anfrage). Antwortet das AD nicht, gibt es keinen Zugang, bis es wieder erreichbar ist.
+- Für diese Prüfung braucht der Chatbot ein **Dienstkonto** (`AD_BIND_USER`): ein normales Domänenkonto ohne besondere Rechte, das Passwort sollte nicht ablaufen. Das Passwort steht am besten in einer Datei, die nur der Chatbot lesen darf (`AD_BIND_PASSWORD_FILE`). Lehnt das AD das Dienstkonto ab, versucht der Chatbot es erst nach einer Minute wieder, damit das AD es nicht selbst sperrt.
+- Wird ein Konto im AD gesperrt, kann es je nach Aufbau einige Sekunden dauern, bis alle Domänencontroller davon wissen.
+- Das Passwort geht nur verschlüsselt zum Domänencontroller: mit `ldaps://`, oder mit `ldap://` und StartTLS. Der Chatbot prüft das Zertifikat des Domänencontrollers. Stammt es von der eigenen Zertifizierungsstelle der Firma und kennt das Betriebssystem diese nicht, gibt `AD_CA_FILE` ihr Zertifikat (PEM) an.
+- `AD_ALLOWED_GROUPS` beschränkt den Zugang auf Mitglieder bestimmter Gruppen (Name oder DN, mehrere mit `;` getrennt). Mitgliedschaften über verschachtelte Gruppen zählen mit. Die primäre Gruppe eines Kontos (meist *Domänen-Benutzer*) zählt nicht, dafür eine eigene Gruppe anlegen.
+- `AD_ADMIN_GROUPS` (gleiche Schreibweise) bestimmt die Admins. Nur sie wählen das Embedding-Modell für alle, dürfen Cloud-Modelle nutzen (siehe [Einstellungen](#einstellungen)) und Dokumente der Wissensbasis löschen. Hochladen darf jeder. Ein Dokument unter einem schon vorhandenen Namen hochzuladen ersetzt das alte, das gilt als Löschen: Ohne Admin-Rechte wird so ein Upload mit einem Hinweis abgelehnt, die Datei muss dann anders heißen. Admins haben immer Zugang, auch ohne Mitgliedschaft in `AD_ALLOWED_GROUPS`. Wer aus der Admin-Gruppe entfernt wird, verliert die Rechte beim nächsten Schritt im Chat, ein gewähltes Cloud-Modell wird durch ein lokales ersetzt.
+- Kennung im Chatbot ist der Anmeldename (`sAMAccountName`) in Kleinbuchstaben, daran hängen Chats und Einstellungen. Was bisher unter dem Nutzer `lokal` gespeichert ist, sehen die AD-Nutzer nicht.
+- Nach 5 Fehlversuchen nimmt der Chatbot für diesen Benutzernamen 15 Minuten lang keine Anmeldung an und fragt das AD in der Zeit nicht. So lässt sich ein Konto nicht über den Chatbot im AD sperren.
+- Eine Anmeldung gilt bis zu 15 Tage (`user_session_timeout` in `src/ui/.chainlit/config.toml`), solange das Konto im AD Zugang hat.
+- Auch die [API](#api) und die Dateien (Dokumente, Bilder, Videos) gibt es dann nur nach der Anmeldung, offen bleibt `GET /health`. Andere Programme melden sich mit `POST /ui/login` an (Formularfelder `username` und `password`) und schicken danach das Cookie `access_token` mit, oder dessen Wert als `Authorization: Bearer …`.
+- Eine Anmeldung ohne Passworteingabe (Kerberos) ist nicht eingebaut. Dafür kann ein Reverse-Proxy mit SSO den Nutzer im Header `X-Forwarded-User` liefern, `AD_ENABLED` bleibt dann aus.
+
+**Im Netzwerk:** Vom Browser zum Chatbot geht das Passwort nur verschlüsselt, wenn die Seite per HTTPS kommt. Wird der Chatbot von anderen Rechnern aus genutzt, gehört ein Reverse-Proxy mit HTTPS davor.
+
+**Fehlersuche:** Die Anmeldeseite meldet bei jedem Problem nur „Anmeldung fehlgeschlagen“. Den Grund zeigt `python main.py --mode ad --user NAME`, etwa falsches Passwort, gesperrtes Konto, nicht in der Gruppe, Domänencontroller nicht erreichbar oder Zertifikat ungültig. Der Befehl prüft auch das Dienstkonto und zeigt, ob das Konto Admin ist. Außerdem steht er im Log des Servers. Startet der Chatbot mit `AD_ENABLED=true` nicht, fehlt eine Einstellung oder das Paket ldap3, und die Meldung beim Start nennt sie.
+
 ## Konfiguration (Umgebungsvariablen)
 
 | Variable | Standard | Bedeutung |
@@ -256,6 +301,17 @@ Gesprochene Fragen wandelt **[Whisper large-v3-turbo](https://huggingface.co/ope
 | `SPEECH_MAX_SECONDS` | `120` | Längere Aufnahmen werden abgeschnitten |
 | `NETWORKS_DIR` | `./networks` | Ordner mit den eigenen neuronalen Netzen |
 | `CORS_ORIGINS` | `http://localhost:3000` | Erlaubte Frontend-Origins, kommagetrennt |
+| `AD_ENABLED` | `false` | `true` schaltet die [Anmeldung mit Active Directory](#anmeldung-mit-active-directory-optional) ein |
+| `AD_SERVER` | leer | Domänencontroller als `ldaps://…` oder `ldap://…` (dann mit StartTLS), mehrere kommagetrennt |
+| `AD_DOMAIN` | leer | DNS-Name der Domäne, z. B. `firma.local` |
+| `AD_BASE_DN` | aus `AD_DOMAIN` | Suchbereich für Nutzer und Gruppen, z. B. `DC=firma,DC=local` |
+| `AD_ALLOWED_GROUPS` | leer | Nur Mitglieder dieser Gruppen dürfen sich anmelden (Name oder DN, mit `;` getrennt); leer = alle Konten der Domäne |
+| `AD_ADMIN_GROUPS` | leer | Admins (Schreibweise wie oben): wählen das Embedding-Modell und dürfen Cloud-Modelle nutzen; leer = keine Admins |
+| `AD_BIND_USER` | leer | Dienstkonto für die laufende Prüfung, ob Konten noch Zugang haben (nötig mit `AD_ENABLED`) |
+| `AD_BIND_PASSWORD`, `AD_BIND_PASSWORD_FILE` | leer | Passwort des Dienstkontos, direkt oder aus einer Datei (empfohlen) |
+| `AD_CHECK_SECONDS` | `10` | So lange gilt das Ergebnis der Prüfung, bevor das AD erneut gefragt wird (`0` = bei jeder Anfrage) |
+| `AD_CA_FILE` | leer | Zertifikat (PEM) der Zertifizierungsstelle der Domänencontroller; leer = Zertifikate des Betriebssystems |
+| `AD_TIMEOUT` | `5` | Sekunden Wartezeit je Domänencontroller |
 
 Die Modelle sind Standardwerte. Jeder Nutzer kann Chat-, Agent-, Bild- und Videomodelle in den Einstellungen für sich ändern. Das Embedding-Modell lässt sich dort für alle ändern, die Wissensbasis wird dann automatisch neu eingelesen.
 
@@ -265,13 +321,15 @@ Die Modelle sind Standardwerte. Jeder Nutzer kann Chat-, Agent-, Bild- und Video
 |---|---|
 | `POST /chat` `{message, chatId?}` | Agent-Antwort `{text, chatId, images[], videos[]}` (`/rag` ist ein Alias) |
 | `POST /transcribe` (Datei im Feld `file`) | Spracheingabe: Audiodatei in Text umwandeln `{text}` |
-| `GET /documents`, `POST /documents`, `DELETE /documents/{name}` | Wissensbasis verwalten |
+| `GET /documents`, `POST /documents`, `DELETE /documents/{name}` | Wissensbasis verwalten; mit AD-Anmeldung löschen (`403`) und ersetzen (`409`) nur Admins |
 | `GET /images/{name}` | erzeugte Bilder |
 | `GET /videos/{name}` | erzeugte Videos |
 | `GET /files/{name}` | Dokument der Wissensbasis zum Ansehen im Browser |
 | `GET /health` | Statusprüfung |
 
 Die API hält den Verlauf pro `chatId` nur im Arbeitsspeicher. Die Oberfläche stellt ihn aus der gespeicherten Historie wieder her.
+
+Mit `AD_ENABLED=true` brauchen alle Routen außer `/health` eine Anmeldung, siehe [Anmeldung mit Active Directory](#anmeldung-mit-active-directory-optional).
 
 ## Tests
 
@@ -281,7 +339,7 @@ source .venv/bin/activate     # Windows: .venv\Scripts\activate
 pytest
 ```
 
-Die Tests brauchen weder Ollama noch eine GPU noch das FLUX-, Video- oder Spracherkennungsmodell: Modelle werden durch vorgegebene Antworten ersetzt, Bilder und Videos durch Platzhalter, eigene Netze durch kleine Testnetze. Das Laden des Videomodells in zwei Stufen prüft ein Test mit einer nachgebauten Pipeline.
+Die Tests brauchen weder Ollama noch eine GPU noch das FLUX-, Video- oder Spracherkennungsmodell: Modelle werden durch vorgegebene Antworten ersetzt, Bilder und Videos durch Platzhalter, eigene Netze durch kleine Testnetze. Das Laden des Videomodells in zwei Stufen prüft ein Test mit einer nachgebauten Pipeline. Die Anmeldung mit Active Directory prüfen die Tests mit einem nachgebauten AD, ein Domänencontroller ist nicht nötig.
 
 ## Daten und Ordner
 
@@ -297,9 +355,9 @@ Alles, was zur Laufzeit entsteht, steht in `.gitignore` und landet nicht im Repo
 
 ## Struktur
 
-- `main.py`: Startpunkt (`--mode backend|chat|frontend|all`)
+- `main.py`: Startpunkt (`--mode backend|chat|frontend|all|networks|transcribe|ad`)
 - `install.py`, `install.sh`, `install.bat`: Installer (Logik in `install.py`, die beiden anderen sind Starter)
-- `pyproject.toml`: Abhängigkeiten (Extras `dev` und `image`)
+- `pyproject.toml`: Abhängigkeiten (Extras `dev`, `image` und `ad`)
 - `src/Agents/`
   - `chat_agent.py`: Ablauf einer Nachricht, Werkzeug-Agent und Chat-Modell
   - `document_lookup.py`: Dokumentsuche (Dokumentanfragen erkennen, Dateinamen abgleichen)
@@ -311,13 +369,13 @@ Alles, was zur Laufzeit entsteht, steht in `.gitignore` und landet nicht im Repo
   - `neural_networks.py`: eigene neuronale Netze (Basisklasse `NeuralNetwork`, Einlesen aus `networks/`, Netz als Tool, `--mode networks`)
   - `tools.py`: Tools des Werkzeug-Agenten (Wissensbasis, Dateisystem, Bild, Video)
   - `models.py`: Modellwahl und Liste der lokalen Ollama-Modelle
-- `src/rag_chatpipline/`: `api_server.py` (FastAPI), `knowledge_base.py` (Qdrant, hybride Suche), `bm25.py`, `config.py`
+- `src/rag_chatpipline/`: `api_server.py` (FastAPI), `knowledge_base.py` (Qdrant, hybride Suche), `bm25.py`, `config.py`, `ad_auth.py` (Anmeldung mit Active Directory)
 - `src/ui/`: Chainlit-Oberfläche
   - `chainlit_app.py`, `history_db.py` (Chat-Historie), `user_settings.py` (Einstellungen pro Nutzer)
   - `.chainlit/config.toml`
-  - `public/user_menu_settings.js` (Menüpunkt *Einstellungen*), `public/elements/` (`SpeakButton.jsx`, `DocumentsPanel.jsx`)
+  - `public/user_menu_settings.js` (Menüpunkt *Einstellungen*, Feld *Benutzername* auf der Anmeldeseite), `public/elements/` (`SpeakButton.jsx`, `DocumentsPanel.jsx`)
 - `networks/`: eigene neuronale Netze, je Netz ein Ordner mit `network.py`
-  - `handschrift/`: CNN zur Handschrifterkennung (MNIST), `aktienkurs/`: LSTM zur Kursprognose
+  - `handschrift/`: CNN zur Handschrifterkennung (MNIST), `aktienkurs/`: LSTM zur Kursprognose, `aktienkurs_ohlcv/`: Kerzen-LSTM zur Kursprognose (nach Stock-Market-Prediction-Model)
 - `tests/`
 - `docs/`: Anleitung für eigene Netze (`eigene-netze.md`), Ablaufdiagramm (`ablauf.drawio`), `images/` mit Screenshots und Diagramm für diese README
 
@@ -343,9 +401,25 @@ Alles, was zur Laufzeit entsteht, steht in `.gitignore` und landet nicht im Repo
 | „Zu wenig freier Arbeitsspeicher für Kandinsky…“ im Chat | Der Textencoder braucht beim Laden etwa 25 GB freien Arbeitsspeicher. Andere Programme schließen; auf Rechnern mit 32 GB RAM wird es knapp. |
 | „Der Textencoder hat in float16 ungültige Werte geliefert“ | Die GPU kann kein bfloat16 (z. B. GTX 10xx) und das Modell rechnet in float16 nicht sauber. Anderes Videomodell wählen. |
 | Eigenes Netz erscheint nicht oder wird nicht aufgerufen | `python main.py --mode networks` zeigt den Grund (fehlende Gewichte, Fehler in `network.py`, …). Nach Änderungen den Chatbot neu starten. Siehe [docs/eigene-netze.md](docs/eigene-netze.md#12-fehlerbehebung). |
+| Anmeldeseite meldet „Anmeldung fehlgeschlagen“ | `python main.py --mode ad --user NAME` zeigt den Grund. Nach 5 Fehlversuchen nimmt der Chatbot den Namen 15 Minuten lang nicht an, ein Neustart des Chatbots hebt das auf. |
+| `AD-Anmeldung: …` beim Start | `AD_ENABLED=true`, aber `AD_SERVER`, `AD_DOMAIN`, das Dienstkonto oder das Paket ldap3 fehlen (`./install.sh --ad`). |
+| „Dein Zugang lässt sich gerade nicht prüfen“ im Chat, niemand kommt mehr hinein | Das AD antwortet nicht oder lehnt das Dienstkonto ab (Passwort geändert oder abgelaufen, Konto gesperrt). Der Grund steht im Log des Servers, `python main.py --mode ad` prüft das Dienstkonto. |
+| „… gibt es in der Wissensbasis schon. Ersetzen und Löschen dürfen nur Admins“ | Mit AD-Anmeldung ersetzen nur Admins ein vorhandenes Dokument. Datei umbenennen oder einen Admin bitten, das alte Dokument zu löschen. Ohne Admin-Rechte fehlen auch die Löschknöpfe in der Seitenleiste. |
+| Feld *Embedding-Modell* oder Cloud-Modelle fehlen | Mit AD-Anmeldung nur für Admins (`AD_ADMIN_GROUPS`). Cloud-Modelle muss außerdem Ollama kennen (`ollama list`). |
+| `certificate verify failed` bei der AD-Anmeldung | Das Zertifikat des Domänencontrollers ist nicht vertrauenswürdig: `AD_CA_FILE` auf das Zertifikat der Firmen-CA setzen. In `AD_SERVER` den Namen verwenden, auf den das Zertifikat ausgestellt ist. |
 | In den Einstellungen fehlen Modelle | Ollama läuft nicht oder das Modell ist ein Cloud- bzw. Embedding-Modell. Für den Werkzeug-Agenten erscheinen nur Modelle mit Tool-Calling. |
 
 ## Änderungen
+
+**27.11.2026**
+
+- **Neues Beispielnetz Kerzen-LSTM** (`networks/aktienkurs_ohlcv/`, Tool `aktienkurs_ohlcv_vorhersagen`): Architektur aus dem Keras-Projekt Stock-Market-Prediction-Model (Harshit Kushwaha, MIT; auch als hrirkslab/Stock-Market-Prediction-Using-ML), in PyTorch nachgebaut. Es liest 60 Tage Eröffnung, Hoch, Tief, Schluss und Volumen und schätzt bis zu 30 Handelstage, mit Tabelle und Diagramm. Behoben gegenüber dem Original: keine konstanten Kennzahlen mehr als Eingabe, Kurse relativ statt in Dollar, eine Prognose über mehrere Tage, die nicht nur Nullen liefert. Anleitung in `docs/eigene-netze.md`, Abschnitt 9.
+- **Anmeldung mit Active Directory (optional):** Mit `AD_ENABLED=true` zeigt die Oberfläche eine Anmeldeseite, Benutzername und Passwort werden per LDAP (LDAPS oder StartTLS) am Domänencontroller geprüft. Zugang optional nur für Mitglieder bestimmter Gruppen, Schutz vor Kontosperren durch Fehlversuche, API und Dateien nur nach der Anmeldung. Neuer Modus `python main.py --mode ad` für eine Probe-Anmeldung, neue Installer-Option `--ad`, neues Extra `ad` (ldap3), neue Umgebungsvariablen `AD_*`. Ohne `AD_ENABLED` ändert sich nichts.
+- **Sofortige Sperre:** Ein Dienstkonto prüft nach der Anmeldung vor jeder Aktion, ob das Konto im AD noch Zugang hat. Gesperrte, deaktivierte, abgelaufene oder gelöschte Konten verlieren ihn sofort, auch in offenen Chats. Neue Umgebungsvariablen `AD_BIND_USER`, `AD_BIND_PASSWORD`, `AD_BIND_PASSWORD_FILE` und `AD_CHECK_SECONDS`.
+- **Admins:** Mit `AD_ADMIN_GROUPS` wählen nur Admins das Embedding-Modell, nur sie bekommen Cloud-Modelle angeboten, und nur sie löschen oder ersetzen Dokumente (Seitenleiste, Anhänge im Chat und API). Hochladen darf jeder. Die Modellwahl wird auf dem Server nachgeprüft.
+- **Agent:** `write_file` überschreibt keine Dokumente der Wissensbasis (`Dateien/`) mehr. Sonst ließ sich ein Dokument über den Agenten ersetzen, ohne dass der Suchindex nachgezogen wurde.
+- **Log:** Bricht der Browser eine Anfrage ab (z. B. bei der Weiterleitung nach der Anmeldung), erscheint kein „RuntimeError: No response returned“ von Chainlit mehr im Terminal.
+- **Modelllisten:** Ein einzelnes Ollama-Modell, das sich nicht abfragen lässt (z. B. ein nicht mehr verfügbares Cloud-Modell), leert nicht mehr die ganze Auswahl.
 
 **22.11.2026**
 
@@ -388,6 +462,8 @@ Lizenzen der Python-Pakete laut den installierten Paketen (Stand der Installatio
 | [PyTorch](https://github.com/pytorch/pytorch) | Rechnen auf GPU/CPU für FLUX, das Videomodell und die Beispielnetze | BSD-3-Clause |
 | [PyAV](https://github.com/PyAV-Org/PyAV) | Videos mit Ton als MP4 speichern | BSD-3-Clause |
 | [Pillow](https://github.com/python-pillow/Pillow) | Bilder einlesen (Beispielnetze), Diagramme zeichnen | MIT-CMU |
+| [ldap3](https://github.com/cannatag/ldap3) | Anmeldung mit Active Directory (optional) | LGPL-3.0 |
+| [Stock-Market-Prediction-Model](https://github.com/harshitt13/Stock-Market-Prediction-Model) (Harshit Kushwaha) | Vorlage für die Architektur des Kerzen-LSTM (`networks/aktienkurs_ohlcv/`), in PyTorch nachgebaut, kein Code übernommen | MIT |
 | [pytest](https://github.com/pytest-dev/pytest) / [HTTPX](https://github.com/encode/httpx) | Tests | MIT / BSD-3-Clause |
 
-**Modelle** haben eigene Lizenzen, die nicht zu den Paketen gehören. Bitte vor dem Firmeneinsatz prüfen: Teuken (Chat-Modell), Qwen3 (Agent-Modell), nomic-embed-text (Embeddings), FLUX (Bildmodell; FLUX.2 [klein] 4B steht unter Apache-2.0, andere Varianten wie FLUX.2 [klein] 9B oder FLUX.1 [dev] haben andere Lizenzen), Kandinsky 6.0 Video Lite (Videomodell, MIT) und Whisper large-v3-turbo (Spracherkennung, MIT). Das Beispielnetz zur Handschrifterkennung wird mit dem MNIST-Datensatz (Yann LeCun, Corinna Cortes, Christopher Burges) trainiert.
+**Modelle** haben eigene Lizenzen, die nicht zu den Paketen gehören. Bitte vor dem Firmeneinsatz prüfen: Teuken (Chat-Modell), Qwen3 (Agent-Modell), nomic-embed-text (Embeddings), FLUX (Bildmodell; FLUX.2 [klein] 4B steht unter Apache-2.0, andere Varianten wie FLUX.2 [klein] 9B oder FLUX.1 [dev] haben andere Lizenzen), Kandinsky 6.0 Video Lite (Videomodell, MIT) und Whisper large-v3-turbo (Spracherkennung, MIT). Das Beispielnetz zur Handschrifterkennung wird mit dem MNIST-Datensatz (Yann LeCun, Corinna Cortes, Christopher Burges) trainiert. Die Kursdaten für die Kursnetze (z. B. die Apple-Kurse aus dem Originalprojekt des Kerzen-LSTM) stammen meist von Yahoo Finance und unterliegen deren Nutzungsbedingungen.

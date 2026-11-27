@@ -1,6 +1,7 @@
 // Fügt im Benutzermenü (Avatar oben rechts) den Punkt "Einstellungen" ein.
 // Chainlit bietet dort keine eigenen Einträge an. Der Punkt öffnet den Einstellungsdialog des Chats,
 // den Chainlit sonst nur über das Zahnrad neben dem Eingabefeld zeigt.
+// Außerdem: Auf der Anmeldeseite (nur mit AD-Anmeldung) heißt das erste Feld "Benutzername" statt "E-Mail Adresse".
 (function () {
   const ITEM_ID = "user-menu-settings";
   const GEAR =
@@ -44,7 +45,21 @@
     logout.before(item);
   }
 
-  new MutationObserver(addItem).observe(document.body, {
+  function relabelLogin() {
+    const input = document.getElementById("email");
+    if (!input) return;
+    if (input.placeholder !== "Windows-Benutzername") {
+      input.placeholder = "Windows-Benutzername";
+      input.autocomplete = "username";
+    }
+    const label = document.querySelector('label[for="email"]');
+    if (label && label.textContent !== "Benutzername") label.textContent = "Benutzername";
+  }
+
+  new MutationObserver(() => {
+    addItem();
+    relabelLogin();
+  }).observe(document.body, {
     childList: true,
     subtree: true,
     attributes: true,

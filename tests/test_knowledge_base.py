@@ -89,3 +89,17 @@ def test_switching_embedding_model_reads_documents_into_new_collection(fake_olla
 def test_same_model_ignores_latest_tag():
     assert kb.same_model("nomic-embed-text", "nomic-embed-text:latest")
     assert not kb.same_model("nomic-embed-text", "granite-embedding:278m")
+
+
+def test_add_document_without_replace_keeps_the_existing_one(workspace, vector_store, tmp_path):
+    from rag_chatpipline import config
+
+    first, second = tmp_path / "a.txt", tmp_path / "b.txt"
+    first.write_text("Erste Fassung der Reiserichtlinie.")
+    second.write_text("Zweite Fassung.")
+    kb.add_document(first, "richtlinie.txt", vector_store=vector_store)
+    with pytest.raises(kb.DocumentExistsError):
+        kb.add_document(second, "richtlinie.txt", vector_store=vector_store, replace=False)
+    assert (config.DOCUMENTS_DIR / "richtlinie.txt").read_text() == "Erste Fassung der Reiserichtlinie."
+    kb.add_document(second, "richtlinie.txt", vector_store=vector_store)  # mit Ersetzen (Standard)
+    assert (config.DOCUMENTS_DIR / "richtlinie.txt").read_text() == "Zweite Fassung."

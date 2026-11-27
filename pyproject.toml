@@ -31,6 +31,7 @@ dependencies = [
 dev = [
     "pytest",
     "httpx",
+    "ldap3",  # Tests der Anmeldung mit Active Directory
 ]
 # Lokale Bild- und Videogenerierung (FLUX.2 [klein] 4B, Kandinsky 6.0 Video Lite) und die Beispielnetze unter
 # networks/. Der Installer wählt die passende PyTorch-Variante (CUDA/CPU).
@@ -42,6 +43,10 @@ image = [
     "huggingface_hub",
     "pillow",
     "av",  # PyAV: Videos mit Ton als MP4 speichern
+]
+# Anmeldung mit Microsoft Active Directory (optional, eingeschaltet mit AD_ENABLED=true)
+ad = [
+    "ldap3",
 ]
 
 [tool.setuptools]

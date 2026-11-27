@@ -98,7 +98,7 @@ Name, Beschreibung und Parameterbeschreibungen entscheiden also, ob das Sprachmo
 
 ## 2. Schnellstart mit den Beispielen
 
-Im Repository liegen zwei fertige Beispiele: `networks/handschrift/` (CNN) und `networks/aktienkurs/` (LSTM). Sie brauchen PyTorch und Pillow, die der Installer mitbringt (nicht mit `--no-image` installieren).
+Im Repository liegen drei fertige Beispiele: `networks/handschrift/` (CNN), `networks/aktienkurs/` (LSTM auf Schlusskursen) und `networks/aktienkurs_ohlcv/` (LSTM auf Tageskerzen, nach einem fremden Keras-Projekt nachgebaut, siehe [Abschnitt 9](#zweites-kursnetz-kerzen-lstm-nach-stock-market-prediction-model)). Sie brauchen PyTorch und Pillow, die der Installer mitbringt (nicht mit `--no-image` installieren).
 
 **1. Umgebung aktivieren**
 
@@ -111,6 +111,7 @@ source .venv/bin/activate        # Windows: .venv\Scripts\activate
 ```bash
 python networks/handschrift/train.py            # lädt MNIST (12 MB), ca. 20 s auf GPU, einige Minuten auf CPU
 python networks/aktienkurs/train.py --demo      # künstliche Kurse, nur zum Ausprobieren, wenige Sekunden
+python networks/aktienkurs_ohlcv/train.py --demo   # ebenso für das Kerzen-LSTM
 ```
 
 Ausgabe (Handschrift):
@@ -132,6 +133,7 @@ python main.py --mode networks
 ```
 Netz-Ordner: /.../RAG_Chatbot/networks
   OK  aktienkurs_vorhersagen       aktienkurs/      bereit
+  OK  aktienkurs_ohlcv_vorhersagen aktienkurs_ohlcv/ bereit
   OK  handschrift_erkennen         handschrift/     bereit
 ```
 
@@ -552,13 +554,52 @@ Liegt der Fehler des Netzes nicht deutlich darunter, hat es nichts Brauchbares g
 
 `predict()` zeichnet mit Pillow ein Liniendiagramm (letzte 90 Kurse blau, Prognose orange) und gibt es als `NetworkResult` zurück. Wer lieber matplotlib benutzt: `pip install matplotlib`, Diagramm mit `plt.savefig(self.new_image_path())` speichern.
 
+### Zweites Kursnetz: Kerzen-LSTM (nach Stock-Market-Prediction-Model)
+
+Ordner `networks/aktienkurs_ohlcv/`, Tool `aktienkurs_ohlcv_vorhersagen`. Vorlage ist das LSTM aus dem Projekt [Stock-Market-Prediction-Model](https://github.com/harshitt13/Stock-Market-Prediction-Model) von Harshit Kushwaha (MIT-Lizenz, auch als [hrirkslab/Stock-Market-Prediction-Using-ML](https://github.com/hrirkslab/Stock-Market-Prediction-Using-ML) veröffentlicht). Das Original ist mit TensorFlow/Keras geschrieben. Hier ist es in PyTorch nachgebaut, Code und Gewichte des Originals werden nicht verwendet.
+
+| | Original (Keras) | Nachbau (`model.py`) |
+|---|---|---|
+| Schichten | LSTM(50) → LSTM(50) → Dense(25) → Dense(1) | gleich, die letzte Schicht mit 30 Ausgaben |
+| Eingabe | 60 Tage: Schluss, Hoch, Tief, Eröffnung, Volumen, EPS, Umsatz, Eigenkapitalrendite, KGV | 60 Tage: Eröffnung, Hoch, Tief, Schluss, Volumen |
+| Skalierung | MinMax auf den Kursbereich der Trainingsaktie (in Dollar) | Kurse relativ zum letzten Schlusskurs, Volumen relativ zum Mittel des Fensters |
+| Ausgabe | Schlusskurs des nächsten Tages | Schlusskurse der nächsten 30 Handelstage auf einmal |
+| Training | 1 Epoche, Batchgröße 1, zufällige Prüfdaten | 20 Epochen, Prüfdaten zeitlich nach den Trainingsdaten, mit Abstand |
+
+Warum die Änderungen:
+
+- **Kennzahlen:** Das Original holt EPS, Umsatz, Eigenkapitalrendite und KGV einmal mit `yfinance` und schreibt den heutigen Wert in jede Zeile seit 2010. Für das Netz sind das Konstanten ohne Information, dafür steckt Wissen aus der Zukunft darin. Der Nachbau lässt sie weg.
+- **Skalierung:** Weil das Original auf den Kursbereich von Apple skaliert (etwa 6 bis 250 $), kann es nur Kurse in diesem Bereich schätzen. Relativ zum letzten Kurs sieht eine Aktie für 5 € aus wie eine für 500 €.
+- **Mehrere Tage:** Das Original wollte die nächsten 30 Tage aus Fenstern von 60 Tagen schätzen, hatte für die Zukunft aber nur 30 erfundene Tage. Die Fenster blieben leer, und gespeichert wurden 30 Nullen. Der Nachbau schätzt alle 30 Tage in einem Durchgang und braucht keine erfundenen Kurse.
+- **Lineare Regression:** Das zweite Modell des Originals ist kein neuronales Netz und schätzt den Schlusskurs aus dem Schlusskurs desselben Tages. Es ist nicht übernommen.
+
+Trainieren mit den Daten des Originals (Apple, 2010 bis Dezember 2024) oder mit eigenen Exporten. Gebraucht werden die Spalten Eröffnung, Hoch, Tief, Schluss und Volumen, z. B. aus den historischen Kursen von Yahoo Finance:
+
+```bash
+mkdir -p networks/aktienkurs_ohlcv/daten
+curl -L -o networks/aktienkurs_ohlcv/daten/aapl_2010-2024.csv https://raw.githubusercontent.com/hrirkslab/Stock-Market-Prediction-Using-ML/main/data/stock_data.csv
+python networks/aktienkurs_ohlcv/train.py networks/aktienkurs_ohlcv/daten/aapl_2010-2024.csv
+```
+
+```
+Training auf cuda: 3105 Fenster aus aapl_2010-2024.csv, Prüfung: 534 Fenster
+Epoche 20: Fehler Prüfdaten Tag +1 1.15 %, Tag +5 2.73 %, Tag +30 5.69 % (Kurs bleibt gleich: 1.16 / 2.71 / 6.52 %)
+```
+
+Für die nächsten Tage ist das Netz also nicht besser als „der Kurs bleibt, wie er ist“. Nach 30 Tagen liegt es etwas näher, vor allem weil es den Aufwärtstrend von Apple mitgelernt hat. Mehr ist aus Kursen allein kaum herauszuholen. Das Original hätte dieselbe Grenze, hat sie aber nicht gemessen.
+
+Im Chat entscheidet das Sprachmodell anhand der Beschreibungen zwischen beiden Kursnetzen. Hat eine Datei nur Schlusskurse, meldet `aktienkurs_ohlcv_vorhersagen` das und verweist auf `aktienkurs_vorhersagen`.
+
 ---
 
 ## 10. Andere Frameworks: Keras, scikit-learn, ONNX
 
 Die Basisklasse hängt nicht von PyTorch ab. `load()` und `predict()` dürfen beliebigen Python-Code enthalten. Fehlende Pakete in der `.venv` installieren (`pip install ...`) und, damit sie bei einer Neuinstallation nicht fehlen, in `pyproject.toml` unter `dependencies` eintragen.
 
-**Keras / TensorFlow** (`pip install tensorflow`):
+**Keras / TensorFlow** (`pip install tensorflow`). Ein Keras-Modell lässt sich so direkt einbinden. Die Alternative ist ein Nachbau in PyTorch, wie beim [Kerzen-LSTM](#zweites-kursnetz-kerzen-lstm-nach-stock-market-prediction-model): Dann braucht es kein TensorFlow, aber neue Gewichte.
+
+**Vorsicht bei fremden Gewichten:** Dateien im Pickle-Format (`.pkl`, `.joblib`, ältere `.pt`) können beim Laden beliebigen Code ausführen. Nur aus vertrauenswürdiger Quelle laden. PyTorch-Gewichte mit `torch.load(..., weights_only=True)`, Keras-Modelle mit `keras.saving.load_model(...)` (lädt im sicheren Modus).
+
 
 ```python
 import numpy as np

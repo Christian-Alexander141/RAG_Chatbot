@@ -5,12 +5,13 @@ nach models/ (mit --video auch das Videomodell).
 Läuft unter Linux, WSL, macOS und Windows. Bereits erledigte Schritte werden übersprungen.
 Erneut installiert wird nur, wenn sich pyproject.toml oder die gewählten Extras geändert haben.
 
-Aufruf: python install.py [--dev] [--no-image] [--no-speech] [--video] [--force]
-  --dev        Test-Pakete (pytest, httpx)
+Aufruf: python install.py [--dev] [--no-image] [--no-speech] [--video] [--ad] [--force]
+  --dev        Test-Pakete (pytest, httpx, ldap3)
   --no-image   ohne Bildgenerierung (spart PyTorch und etwa 16 GB Modelldownload; ohne PyTorch
                gibt es auch keine Spracheingabe)
   --no-speech  ohne Spracheingabe (spart etwa 1,6 GB Modelldownload)
   --video      zusätzlich das Videomodell Kandinsky 6.0 Video Lite laden (etwa 27 GB)
+  --ad         zusätzlich das Paket für die Anmeldung mit Active Directory (ldap3), siehe README
   --force      .venv neu anlegen und alles neu installieren
 """
 from __future__ import annotations
@@ -173,7 +174,7 @@ def main() -> None:
     if "-h" in args or "--help" in args:
         print(__doc__)
         return
-    unknown = [a for a in args if a not in ("--dev", "--no-image", "--no-speech", "--video", "--force")]
+    unknown = [a for a in args if a not in ("--dev", "--no-image", "--no-speech", "--video", "--ad", "--force")]
     if unknown:
         fail(f"Unbekannte Option: {' '.join(unknown)} (siehe --help)")
 
@@ -191,7 +192,7 @@ def main() -> None:
     video = "--video" in args
     if video and not image:
         fail("--video braucht die Pakete der Bildgenerierung, bitte ohne --no-image aufrufen.")
-    extras = ["dev"] * ("--dev" in args) + ["image"] * image
+    extras = ["dev"] * ("--dev" in args) + ["image"] * image + ["ad"] * ("--ad" in args)
     ensure_venv(force)
     install(extras, force)
     if image:

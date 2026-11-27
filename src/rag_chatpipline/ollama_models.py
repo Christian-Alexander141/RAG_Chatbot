@@ -16,17 +16,32 @@ def _ollama(path: str, payload: dict | None = None) -> dict:
         return json.load(r)
 
 
+def _models(cloud: bool) -> dict[str, list[str]]:
+    try:
+        names = [m["name"] for m in _ollama("/api/tags")["models"] if bool(m.get("remote_host")) == cloud]
+    except Exception:
+        logger.warning("Ollama-Modelle konnten nicht abgefragt werden", exc_info=True)
+        return {}
+    models = {}
+    for name in names:
+        try:
+            models[name] = _ollama("/api/show", {"model": name}).get("capabilities", ["completion"])
+        except Exception as exc:  # z. B. ein Cloud-Modell, das es nicht mehr gibt (HTTP 410): nur dieses weglassen
+            logger.warning("Ollama-Modell %s nicht abfragbar, wird nicht angeboten: %s", name, exc)
+    return models
+
+
 def local_models() -> dict[str, list[str]]:
     """{Modellname: Fähigkeiten} aller lokal installierten Modelle. Leer, wenn Ollama nicht erreichbar ist.
 
     Cloud-Modelle fehlen absichtlich, sie würden Daten an fremde Server schicken.
     """
-    try:
-        names = [m["name"] for m in _ollama("/api/tags")["models"] if not m.get("remote_host")]
-        return {name: _ollama("/api/show", {"model": name}).get("capabilities", ["completion"]) for name in names}
-    except Exception:
-        logger.warning("Ollama-Modelle konnten nicht abgefragt werden", exc_info=True)
-        return {}
+    return _models(cloud=False)
+
+
+def cloud_models() -> dict[str, list[str]]:
+    """{Modellname: Fähigkeiten} der in Ollama eingetragenen Cloud-Modelle (laufen auf fremden Servern)."""
+    return _models(cloud=True)
 
 
 def with_capability(capability: str) -> list[str]:

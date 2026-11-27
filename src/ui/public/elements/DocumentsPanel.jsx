@@ -3,6 +3,7 @@ import { Button } from "@/components/ui/button"
 import { Trash2, Upload } from "lucide-react"
 
 // Wissensquellen verwalten. Spricht direkt mit den Dokument-Routen der API (/documents, gleiche Origin).
+// props.canDelete: Löschknöpfe zeigen (mit AD-Anmeldung nur für Admins; die API prüft das selbst noch einmal).
 export default function DocumentsPanel() {
   const [docs, setDocs] = useState([])
   const [status, setStatus] = useState("")
@@ -40,7 +41,8 @@ export default function DocumentsPanel() {
   }
 
   async function remove(name) {
-    await fetch("/documents/" + encodeURIComponent(name), { method: "DELETE" })
+    const res = await fetch("/documents/" + encodeURIComponent(name), { method: "DELETE" })
+    setStatus(res.ok ? "" : (await res.json()).detail)
     load()
   }
 
@@ -52,6 +54,7 @@ export default function DocumentsPanel() {
         <Upload className="mr-2 h-4 w-4" /> Dokumente hochladen
       </Button>
       {status && <div className="text-muted-foreground">{status}</div>}
+      {!props.canDelete && <div className="text-muted-foreground">Dokumente löschen oder ersetzen dürfen nur Admins.</div>}
       <ul className="flex flex-col gap-2">
         {docs.length === 0 && <li className="text-muted-foreground">Noch keine Dokumente.</li>}
         {docs.map((doc) => (
@@ -60,9 +63,11 @@ export default function DocumentsPanel() {
               rel="noreferrer" title={doc.name + " öffnen"}>
               {doc.name} <span className="text-muted-foreground">({doc.chunks})</span>
             </a>
-            <Button variant="ghost" size="icon" onClick={() => remove(doc.name)} title="Entfernen">
-              <Trash2 className="h-4 w-4" />
-            </Button>
+            {props.canDelete && (
+              <Button variant="ghost" size="icon" onClick={() => remove(doc.name)} title="Entfernen">
+                <Trash2 className="h-4 w-4" />
+              </Button>
+            )}
           </li>
         ))}
       </ul>

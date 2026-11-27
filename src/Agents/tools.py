@@ -100,7 +100,7 @@ def read_file(path: str) -> str:
 @tool
 def write_file(path: str, content: str, overwrite: bool = False) -> str:
     """Schreibt Text in eine Datei im Workspace. Fehlende Ordner werden angelegt.
-    Bestehende Dateien werden nur mit overwrite=True überschrieben.
+    Bestehende Dateien werden nur mit overwrite=True überschrieben, Dokumente der Wissensbasis (Dateien/) nie.
 
     Args:
         path: Dateipfad relativ zum Workspace.
@@ -109,6 +109,11 @@ def write_file(path: str, content: str, overwrite: bool = False) -> str:
     """
     try:
         file = _resolve(path)
+        documents = config.DOCUMENTS_DIR.resolve()
+        if file.exists() and (file == documents or documents in file.parents):
+            # Sonst ließe sich ein Dokument über den Agenten ersetzen, ohne Admin-Rechte und ohne neuen Index.
+            return (f"'{path}' ist ein Dokument der Wissensbasis und wird nicht überschrieben. "
+                    "Bitte unter einem anderen Namen speichern.")
         if file.exists() and not overwrite:
             return f"'{path}' existiert bereits. Mit overwrite=True überschreiben."
         file.parent.mkdir(parents=True, exist_ok=True)

@@ -150,3 +150,30 @@ def test_seed_history_restores_context_once(workspace, vector_store, monkeypatch
 
     assert "Ich heiße Alex." in seen[0] and "Freut mich." in seen[0]
     assert "NICHT ÜBERSCHREIBEN" not in seen[0]
+
+
+def test_aborted_browser_requests_are_not_logged_as_errors():
+    """Chainlits Middleware meldet "No response returned", wenn der Browser eine Anfrage abbricht."""
+    import asyncio
+
+    async def chainlit_like(scope, receive, send):
+        await receive()  # sieht die Trennung, antwortet nicht mehr
+        raise RuntimeError("No response returned.")
+
+    async def broken(scope, receive, send):
+        raise RuntimeError("No response returned.")
+
+    async def call(app, first_message):
+        async def receive():
+            return first_message
+
+        async def send(message):
+            pass
+
+        await api_server.IgnoreAbortedRequests(app)({"type": "http", "path": "/ui/login"}, receive, send)
+
+    asyncio.run(call(chainlit_like, {"type": "http.disconnect"}))  # Browser weg: kein Fehler
+    with pytest.raises(RuntimeError):  # Browser noch da: echter Fehler, bleibt sichtbar
+        asyncio.run(call(chainlit_like, {"type": "http.request", "body": b""}))
+    with pytest.raises(RuntimeError):
+        asyncio.run(call(broken, {"type": "http.disconnect"}))  # Trennung nie gelesen: ebenfalls sichtbar

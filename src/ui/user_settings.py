@@ -42,3 +42,14 @@ def resolve(saved: dict[str, str], available: dict[str, list[str]]) -> ModelChoi
         candidates = [saved.get(name), getattr(defaults, name)]
         values[name] = next((c for c in candidates if c and (not options or c in options)), options[0] if options else getattr(defaults, name))
     return ModelChoice(**values)
+
+
+def validated(settings: dict, available: dict[str, list[str]], current: ModelChoice) -> ModelChoice:
+    """Neue Wahl aus dem Dialog "Einstellungen". Die Werte kommen vom Browser und ließen sich fälschen: Was nicht
+    angeboten wurde (z. B. ein Cloud-Modell für Nutzer ohne Admin-Rechte), bleibt bei der bisherigen Wahl."""
+    values = {}
+    for name in FIELDS:
+        offered = available.get(name) or [getattr(current, name)]
+        value = settings.get(name)
+        values[name] = value if value in offered else getattr(current, name)
+    return ModelChoice(**values)

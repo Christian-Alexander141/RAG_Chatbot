@@ -72,6 +72,29 @@ NETWORKS_DIR = Path(os.getenv("NETWORKS_DIR", ROOT / "networks")).resolve()
 
 CORS_ORIGINS = [o for o in os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",") if o]
 
+# Anmeldung mit Microsoft Active Directory (optional, siehe README). Aus: keine Anmeldeseite, wie ohne AD.
+AD_ENABLED = os.getenv("AD_ENABLED", "false").strip().lower() in ("1", "true", "yes", "ja", "on")
+# Domänencontroller, kommagetrennt; antwortet einer nicht, wird der nächste versucht. ldaps:// oder ldap:// (StartTLS)
+AD_SERVER = os.getenv("AD_SERVER", "")
+# DNS-Name der Domäne: ergänzt Benutzernamen ohne @ und ergibt den Suchbereich (firma.local -> DC=firma,DC=local)
+AD_DOMAIN = os.getenv("AD_DOMAIN", "")
+AD_BASE_DN = os.getenv("AD_BASE_DN", "")  # leer = aus AD_DOMAIN
+# Nur Mitglieder dieser Gruppen dürfen sich anmelden (Name oder DN, mit ";" getrennt). Leer = alle Konten der Domäne.
+AD_ALLOWED_GROUPS = [g.strip() for g in os.getenv("AD_ALLOWED_GROUPS", "").split(";") if g.strip()]
+# Admins (Gruppen wie oben): wählen das Embedding-Modell für alle und dürfen Cloud-Modelle nutzen. Leer = niemand.
+AD_ADMIN_GROUPS = [g.strip() for g in os.getenv("AD_ADMIN_GROUPS", "").split(";") if g.strip()]
+# Dienstkonto (normales Domänenkonto ohne besondere Rechte): prüft nach der Anmeldung laufend, ob ein Konto noch
+# aktiv ist, damit gesperrte oder deaktivierte Konten sofort keinen Zugriff mehr haben. Passwort direkt oder als Datei.
+AD_BIND_USER = os.getenv("AD_BIND_USER", "")
+AD_BIND_PASSWORD = os.getenv("AD_BIND_PASSWORD", "")
+AD_BIND_PASSWORD_FILE = os.getenv("AD_BIND_PASSWORD_FILE", "")
+# So viele Sekunden gilt das Ergebnis dieser Prüfung, bevor das AD erneut gefragt wird (0 = bei jeder Anfrage).
+AD_CHECK_SECONDS = int(os.getenv("AD_CHECK_SECONDS", "10"))
+# Zertifikat der Zertifizierungsstelle (PEM), die das Zertifikat der Domänencontroller ausgestellt hat.
+# Leer = Zertifikate des Betriebssystems.
+AD_CA_FILE = os.getenv("AD_CA_FILE", "")
+AD_TIMEOUT = int(os.getenv("AD_TIMEOUT", "5"))  # Sekunden je Domänencontroller
+
 
 def ensure_dirs() -> None:
     for path in (WORKSPACE_DIR, DOCUMENTS_DIR, IMAGES_DIR, VIDEOS_DIR, UPLOADS_DIR, MEMORY_DIR):

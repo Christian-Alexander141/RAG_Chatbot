@@ -22,14 +22,18 @@ class ModelChoice:
                    config.VIDEO_MODEL_DIR.name)
 
 
-def language_models() -> dict[str, list[str]]:
-    """Lokal installierte Ollama-Modelle: {"chat": Sprachmodelle, "tools": nur mit Tool-Calling,
-    "embedding": Embedding-Modelle}. Ohne Cloud-Modelle. Ist Ollama nicht erreichbar, sind alle Listen leer."""
-    models = ollama_models.local_models()
+def language_models(include_cloud: bool = False) -> dict[str, list[str]]:
+    """Ollama-Modelle: {"chat": Sprachmodelle, "tools": nur mit Tool-Calling, "embedding": Embedding-Modelle}.
+
+    Nur lokale Modelle, mit include_cloud (für Admins) auch Cloud-Modelle als Sprachmodelle. Embedding-Modelle sind
+    immer lokal, sonst gingen alle Dokumente der Wissensbasis an fremde Server. Ohne Ollama sind alle Listen leer.
+    """
+    local = ollama_models.local_models()
+    llms = {**local, **(ollama_models.cloud_models() if include_cloud else {})}
     return {
-        "chat": sorted(n for n, caps in models.items() if "completion" in caps),
-        "tools": sorted(n for n, caps in models.items() if "completion" in caps and "tools" in caps),
-        "embedding": sorted(n for n, caps in models.items() if "embedding" in caps),
+        "chat": sorted(n for n, caps in llms.items() if "completion" in caps),
+        "tools": sorted(n for n, caps in llms.items() if "completion" in caps and "tools" in caps),
+        "embedding": sorted(n for n, caps in local.items() if "embedding" in caps),
     }
 
 

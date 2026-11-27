@@ -36,6 +36,10 @@ class KnowledgeBaseError(RuntimeError):
     pass
 
 
+class DocumentExistsError(KnowledgeBaseError):
+    """Ein Dokument mit diesem Namen gibt es schon, und Ersetzen ist nicht erlaubt."""
+
+
 def require_ollama_model(model: str) -> None:
     """Prüft, ob das Modell lokal vorhanden ist. Lädt bewusst nichts herunter."""
     import ollama
@@ -198,13 +202,18 @@ def ingest_file(path: Path, source: Optional[str] = None, vector_store: Any = No
     return len(chunks)
 
 
-def add_document(source_path: Path, name: str, vector_store: Any = None) -> int:
-    """Legt eine Datei im Dokumentenordner ab und indexiert sie. Bei Fehlern wird nichts zurückgelassen."""
+def add_document(source_path: Path, name: str, vector_store: Any = None, replace: bool = True) -> int:
+    """Legt eine Datei im Dokumentenordner ab und indexiert sie. Bei Fehlern wird nichts zurückgelassen.
+
+    Ein vorhandenes Dokument gleichen Namens wird ersetzt, mit replace=False gibt es stattdessen DocumentExistsError.
+    """
     name = Path(name).name  # nie Pfadanteile aus einem Upload übernehmen
     if Path(name).suffix.lower() not in SUPPORTED_SUFFIXES:
         raise KnowledgeBaseError(f"'{name}': Dateityp nicht unterstützt (erlaubt: {sorted(SUPPORTED_SUFFIXES)}).")
     config.DOCUMENTS_DIR.mkdir(parents=True, exist_ok=True)
     target = config.DOCUMENTS_DIR / name
+    if not replace and target.exists():
+        raise DocumentExistsError(f"'{name}' gibt es in der Wissensbasis schon.")
     if source_path.resolve() != target.resolve():
         shutil.copyfile(source_path, target)
     try:

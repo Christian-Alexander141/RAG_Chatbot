@@ -8,8 +8,12 @@
   Der Agent bekommt die Pfade mitgeteilt, damit eigene neuronale Netze oder der Video-Agent sie nutzen können.
 - Spracheingabe: Mikrofon-Knopf neben dem Eingabefeld. Die Aufnahme wird lokal mit Whisper in Text umgewandelt
   und dann wie eine getippte Nachricht beantwortet.
+- Anmeldung: ohne Login (Nutzer "lokal" oder aus dem Header eines Reverse-Proxys) oder, mit AD_ENABLED=true,
+  über eine Anmeldeseite mit dem Konto aus dem Active Directory. Dann wird vor jeder Aktion geprüft, ob das Konto
+  noch Zugang hat, und nur Admins wählen das Embedding-Modell und Cloud-Modelle und löschen oder ersetzen Dokumente.
 """
 import asyncio
+import logging
 import shutil
 from pathlib import Path
 from typing import Optional
@@ -25,7 +29,9 @@ from Agents import neural_networks, speech
 from Agents.chat_agent import chat_stream, seed_history
 from Agents.models import ModelChoice, image_models, language_models, video_models
 from history_db import create_data_layer
-from rag_chatpipline import config, knowledge_base
+from rag_chatpipline import ad_auth, config, knowledge_base
+
+logger = logging.getLogger(__name__)
 
 HELP = (
     "Ich beantworte Fragen zu euren Dokumenten, arbeite mit Dateien im Workspace und erzeuge Bilder und Videos.\n\n"
@@ -45,6 +51,7 @@ SETTINGS_LABELS = {
     "image": ("Bildmodell", "Erzeugt die Bilder. Weitere Modelle legt man unter models/ ab."),
     "video": ("Videomodell", "Erzeugt die Videos mit Ton. Weitere Modelle legt man unter models/video/ ab."),
 }
+CLOUD_NOTE = " Cloud-Modelle (Name mit „cloud“) schicken deine Texte an fremde Server."
 EMBEDDING_LABEL = (
     "Embedding-Modell (für alle Nutzer)",
     "Sucht in der Wissensbasis nach Bedeutung. Ein Wechsel liest alle Dokumente neu ein.",
@@ -68,16 +75,33 @@ def data_layer():
     return create_data_layer()
 
 
-@cl.header_auth_callback
-async def header_auth(headers) -> Optional[cl.User]:
-    """Meldet ohne Login an. Hinter einem Reverse-Proxy mit SSO liefert dieser den Nutzer im Header
-    X-Forwarded-User, jeder sieht dann nur seine eigenen Chats. Ohne Proxy teilen sich alle den Nutzer "lokal"."""
-    return cl.User(identifier=headers.get("x-forwarded-user") or "lokal", metadata={"provider": "header"})
+# Chainlit entscheidet beim Start, welche Anmeldung die Oberfläche nutzt: Es wird nur eine der beiden registriert.
+if ad_auth.enabled():
+    @cl.password_auth_callback
+    async def ad_login(username: str, password: str) -> Optional[cl.User]:
+        """Anmeldeseite: Benutzername und Passwort werden am Active Directory geprüft."""
+        try:
+            user = await asyncio.to_thread(ad_auth.authenticate, username, password)
+        except ad_auth.ADError as exc:
+            logger.error("AD-Anmeldung nicht möglich: %s", exc)
+            return None
+        if user is None:
+            return None
+        return cl.User(identifier=user.username, display_name=user.display_name,
+                       metadata={"provider": "ad", "email": user.email})
+else:
+    @cl.header_auth_callback
+    async def header_auth(headers) -> Optional[cl.User]:
+        """Meldet ohne Login an. Hinter einem Reverse-Proxy mit SSO liefert dieser den Nutzer im Header
+        X-Forwarded-User, jeder sieht dann nur seine eigenen Chats. Ohne Proxy teilen sich alle den Nutzer "lokal"."""
+        return cl.User(identifier=headers.get("x-forwarded-user") or "lokal", metadata={"provider": "header"})
 
 
 async def _open_documents_panel() -> None:
     await cl.ElementSidebar.set_title("Wissensquellen")
-    await cl.ElementSidebar.set_elements([cl.CustomElement(name="DocumentsPanel", props={})])
+    # Nur eine Anzeige: Die API prüft selbst, wer löschen darf.
+    panel = cl.CustomElement(name="DocumentsPanel", props={"canDelete": _admin_rights()})
+    await cl.ElementSidebar.set_elements([panel])
 
 
 def _user_id() -> str:
@@ -85,37 +109,86 @@ def _user_id() -> str:
     return user.identifier if user else "lokal"
 
 
-async def _send_settings() -> None:
-    """Zeigt die Modellwahl an (Dialog "Einstellungen") und merkt sich die Wahl für diese Sitzung."""
-    llms = await cl.make_async(language_models)()
+def _admin_rights() -> bool:
+    """Embedding-Modell wählen (gilt für alle), Dokumente löschen oder ersetzen: mit AD nur Admins, ohne AD jeder."""
+    return ad_auth.admin_rights(cl.user_session.get("admin"))
+
+
+def _may_use_cloud() -> bool:
+    """Cloud-Modelle schicken die Daten an fremde Server: nur für Admins, also nur mit AD."""
+    return ad_auth.enabled() and bool(cl.user_session.get("admin"))
+
+
+async def _has_access() -> bool:
+    """Mit AD: Hat das Konto noch Zugang (nicht gesperrt, deaktiviert, ...)? Sonst ein Hinweis statt einer Antwort.
+
+    Das braucht es für Chats, die schon offen sind: Neue Verbindungen weist der LoginGuard im API-Server ab.
+    Ändern sich die Admin-Rechte, passt sich die Modellauswahl an.
+    """
+    if not ad_auth.enabled():
+        return True
+    access = await asyncio.to_thread(ad_auth.check_access, _user_id())
+    if not access.allowed:
+        if access.reason == ad_auth.AD_UNREACHABLE:
+            text = ("🔒 Dein Zugang lässt sich gerade nicht prüfen, das Active Directory antwortet nicht. "
+                    "Bitte später erneut versuchen.")
+        else:
+            text = "🔒 Dein Zugang zum Chatbot ist beendet. Bei Fragen wende dich bitte an die IT."
+        await cl.Message(text).send()
+        return False
+    previous = cl.user_session.get("admin")
+    cl.user_session.set("admin", access.admin)
+    if previous is not None and previous != access.admin:
+        await _send_settings()  # z. B. keine Cloud-Modelle mehr: Auswahl und gewählte Modelle neu
+        await _open_documents_panel()  # Löschknöpfe passend zur Rolle
+    return True
+
+
+async def _available_models() -> tuple[dict[str, list[str]], list[str]]:
+    """Modelle, die dieser Nutzer wählen darf, und die Embedding-Modelle."""
+    llms = await cl.make_async(language_models)(_may_use_cloud())
     available = {"chat": llms["chat"], "agent": llms["tools"], "image_prompt": llms["chat"], "image": image_models(),
                  "video": video_models()}
+    return available, llms["embedding"]
+
+
+async def _send_settings() -> None:
+    """Zeigt die Modellwahl an (Dialog "Einstellungen") und merkt sich die Wahl für diese Sitzung."""
+    available, embeddings = await _available_models()
     choice = user_settings.resolve(user_settings.load(_user_id()), available)
     cl.user_session.set("models", choice)
     widgets = []
     for key, (label, description) in SETTINGS_LABELS.items():
         current = getattr(choice, key)
         values = available[key] or [current]  # ohne Ollama bzw. ohne heruntergeladenes Modell: nur die aktuelle Wahl
+        if _may_use_cloud() and key in ("chat", "agent", "image_prompt"):
+            description += CLOUD_NOTE
         widgets.append(Select(id=key, label=label, values=values, initial_value=current, description=description))
 
     # Das Embedding-Modell gehört zur gemeinsamen Wissensbasis, nicht zum Nutzer.
-    current = knowledge_base.embedding_model()
-    values = llms["embedding"] or [current]
-    initial = next((v for v in values if knowledge_base.same_model(v, current)), values[0])
-    label, description = EMBEDDING_LABEL
-    widgets.append(Select(id="embedding", label=label, values=values, initial_value=initial, description=description))
+    if _admin_rights():
+        current = knowledge_base.embedding_model()
+        values = embeddings or [current]
+        initial = next((v for v in values if knowledge_base.same_model(v, current)), values[0])
+        label, description = EMBEDDING_LABEL
+        widgets.append(Select(id="embedding", label=label, values=values, initial_value=initial,
+                              description=description))
     await cl.ChatSettings(widgets).send()
 
 
 @cl.on_settings_update
 async def settings_update(settings: dict) -> None:
-    current = cl.user_session.get("models") or ModelChoice.defaults()
-    choice = ModelChoice(**{key: settings.get(key) or getattr(current, key) for key in SETTINGS_LABELS})
+    if not await _has_access():
+        return
+    available, embeddings = await _available_models()
+    choice = user_settings.validated(settings, available, cl.user_session.get("models") or ModelChoice.defaults())
     cl.user_session.set("models", choice)
     await cl.make_async(user_settings.save)(_user_id(), choice)
 
     embedding = settings.get("embedding")
-    if embedding and not knowledge_base.same_model(embedding, knowledge_base.embedding_model()):
+    # Nur wer darf, und nur ein angebotenes Modell: Auch dieser Wert kommt vom Browser.
+    if (embedding and _admin_rights() and embedding in embeddings
+            and not knowledge_base.same_model(embedding, knowledge_base.embedding_model())):
         note = cl.Message(f"Die Wissensbasis wird mit **{embedding}** eingelesen. Das gilt für alle Nutzer und kann "
                           "bei vielen Dokumenten etwas dauern …")
         await note.send()
@@ -130,6 +203,8 @@ async def settings_update(settings: dict) -> None:
 
 @cl.on_chat_start
 async def start() -> None:
+    if not await _has_access():
+        return
     await _send_settings()
     await _open_documents_panel()
     text = HELP
@@ -153,6 +228,8 @@ async def resume(thread: ThreadDict) -> None:
         for step in thread.get("steps", [])
         if step.get("type") in ("user_message", "assistant_message")
     ]
+    if not await _has_access():
+        return
     await _send_settings()
     models = cl.user_session.get("models")
     await cl.make_async(seed_history)(thread["id"], exchanges, None, models.agent)
@@ -184,12 +261,15 @@ async def _ingest_attachments(message: cl.Message) -> list[str]:
         name = Path(element.name).name
         try:
             if Path(name).suffix.lower() in knowledge_base.SUPPORTED_SUFFIXES:
-                chunks = await cl.make_async(knowledge_base.add_document)(Path(element.path), name)
+                chunks = await cl.make_async(knowledge_base.add_document)(Path(element.path), name,
+                                                                          replace=_admin_rights())
                 await cl.Message(f"✅ **{name}** zur Wissensbasis hinzugefügt ({chunks} Abschnitte).").send()
                 target = config.DOCUMENTS_DIR / name
             else:
                 target = await cl.make_async(_save_upload)(Path(element.path), name)
             paths.append(str(target.resolve().relative_to(config.WORKSPACE_DIR.resolve())))
+        except knowledge_base.DocumentExistsError:
+            await cl.Message(f"⚠️ **{name}** gibt es in der Wissensbasis schon. {ad_auth.REPLACE_DENIED}").send()
         except Exception as exc:
             await cl.Message(f"⚠️ **{name}** konnte nicht aufgenommen werden: {exc}").send()
     return paths
@@ -197,6 +277,8 @@ async def _ingest_attachments(message: cl.Message) -> list[str]:
 
 @cl.on_message
 async def on_message(message: cl.Message) -> None:
+    if not await _has_access():
+        return
     attachments = await _ingest_attachments(message)
     text = message.content.strip()
     if not text:
@@ -215,6 +297,8 @@ MAX_AUDIO_SECONDS = 300  # Puffer-Obergrenze; erkannt werden höchstens SPEECH_M
 @cl.on_audio_start
 async def audio_start() -> bool:
     """Mikrofon-Knopf gedrückt. True startet die Aufnahme im Browser."""
+    if not await _has_access():
+        return False
     if not speech.is_installed():
         await cl.Message("⚠️ Die Spracheingabe ist nicht eingerichtet: Das Spracherkennungsmodell fehlt. "
                          "Installation mit `./install.sh` (Windows: `install.bat`).").send()
@@ -241,7 +325,7 @@ async def audio_end() -> None:
         await asyncio.sleep(0.2)  # die letzten Audioblöcke werden parallel verarbeitet
         buffer = cl.user_session.get("audio")
         cl.user_session.set("audio", None)
-        if not buffer:
+        if not buffer or not await _has_access():
             return
         try:
             text = await cl.make_async(speech.transcribe_pcm16)(bytes(buffer), chainlit_config.features.audio.sample_rate)
